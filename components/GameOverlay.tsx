@@ -175,9 +175,7 @@ const GameOverlay: React.FC<GameOverlayProps> = ({
                             
                             <button
                                 onClick={() => {
-                                    setUiState(prev => ({ ...prev, isPaused: false }));
-                                    gameState.isPaused = false;
-                                    audioManager.playSfx('ui_click');
+                                    togglePause();
                                 }}
                                 className="bg-white text-black px-8 py-3 font-mono font-bold hover:bg-gray-200 transition-colors mb-4 min-w-[200px]"
                             >

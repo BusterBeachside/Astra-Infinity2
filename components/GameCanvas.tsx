@@ -91,8 +91,6 @@ const GameCanvas: React.FC = () => {
       if (gs.pauseStartTime) {
           const pauseDuration = Date.now() - gs.pauseStartTime;
           gs.startTime += pauseDuration;
-          gs.lastSpawnTime += pauseDuration;
-          gs.lastPowerupTime += pauseDuration;
       }
       gs.pauseStartTime = undefined;
 
@@ -258,8 +256,6 @@ const GameCanvas: React.FC = () => {
           if (gameStateRef.current.pauseStartTime) {
               const pauseDuration = Date.now() - gameStateRef.current.pauseStartTime;
               gameStateRef.current.startTime += pauseDuration;
-              gameStateRef.current.lastSpawnTime += pauseDuration;
-              gameStateRef.current.lastPowerupTime += pauseDuration;
           }
           gameStateRef.current.pauseStartTime = undefined;
           
