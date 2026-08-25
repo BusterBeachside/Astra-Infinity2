@@ -280,7 +280,7 @@ const AuthOverlay: React.FC<AuthOverlayProps> = ({ onClose, onLoginSuccess, user
                                             <span>Cloud Sync Information</span>
                                         </div>
                                         <p className="text-[9px] text-gray-500 leading-relaxed">
-                                            Underdog ID enables cross-game progression and global leaderboard eligibility. 
+                                            {isWebsim() ? 'Websim Account' : 'Underdog ID'} enables cross-game progression and global leaderboard eligibility. 
                                             Offline progress is saved locally but cannot be recovered if local data is cleared.
                                         </p>
                                     </div>
@@ -308,7 +308,7 @@ const AuthOverlay: React.FC<AuthOverlayProps> = ({ onClose, onLoginSuccess, user
                                         type="button" onClick={() => setView('signup')}
                                         className="text-[10px] font-mono text-gray-500 hover:text-blue-400 transition-colors uppercase"
                                     >
-                                        New Pilot? Create Underdog ID
+                                        New Pilot? Create {isWebsim() ? 'Websim Account' : 'Underdog ID'}
                                     </button>
                                 </div>
                             </motion.form>
@@ -367,7 +367,7 @@ const AuthOverlay: React.FC<AuthOverlayProps> = ({ onClose, onLoginSuccess, user
                                     className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-blue-900 text-white font-bold py-3 rounded transition-all flex items-center justify-center gap-2"
                                 >
                                     {isSubmitting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
-                                    REGISTER UNDERDOG ID
+                                    REGISTER {isWebsim() ? 'WEBSIM ACCOUNT' : 'UNDERDOG ID'}
                                 </button>
 
                                 <div className="text-center">
@@ -442,7 +442,7 @@ const AuthOverlay: React.FC<AuthOverlayProps> = ({ onClose, onLoginSuccess, user
                                 className="space-y-4"
                             >
                                 <div className="text-center space-y-2">
-                                    <h3 className="text-white font-bold">Recover Underdog ID</h3>
+                                    <h3 className="text-white font-bold">Recover {isWebsim() ? 'Websim Account' : 'Underdog ID'}</h3>
                                     <p className="text-[10px] text-gray-500 font-mono">
                                         Enter your email and we'll send you a recovery link.
                                     </p>

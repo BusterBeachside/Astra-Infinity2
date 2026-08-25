@@ -1,6 +1,7 @@
 
 import React, { useState } from 'react';
 import { VisualRNG } from '../../services/rng';
+import { isWebsim } from '../../services/websimService';
 
 interface MainMenuProps {
   onStartGame: (mode: 'normal' | 'hardcore' | 'chaos' | 'practice') => void;
@@ -92,7 +93,7 @@ const MainMenu: React.FC<MainMenuProps> = ({
                     onMouseEnter={playHover}
                     className="px-3 py-1 bg-blue-600/20 border border-blue-600 text-blue-400 font-mono font-bold text-[10px] hover:bg-blue-600 hover:text-white transition-all"
                 >
-                    UNDERDOG ID
+                    {isWebsim() ? 'WEBSIM ACCOUNT' : 'UNDERDOG ID'}
                 </button>
             </div>
 
