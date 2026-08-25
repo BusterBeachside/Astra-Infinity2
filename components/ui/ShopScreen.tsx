@@ -236,6 +236,7 @@ const ShopScreen: React.FC<ShopScreenProps> = ({ progress, onUpdateProgress, onC
             };
 
             const purchaseResult = ChallengeService.onPurchase(newProgress, 'trail');
+            ChallengeService.ensureProgressionMission(newProgress);
             if (purchaseResult.updated) {
                 if (purchaseResult.completed) {
                     audioManager.playSfx('challenge_complete');
@@ -272,6 +273,7 @@ const ShopScreen: React.FC<ShopScreenProps> = ({ progress, onUpdateProgress, onC
             };
 
             const purchaseResult = ChallengeService.onPurchase(newProgress, 'skin');
+            ChallengeService.ensureProgressionMission(newProgress);
             if (purchaseResult.updated) {
                 if (purchaseResult.completed) {
                     audioManager.playSfx('challenge_complete');

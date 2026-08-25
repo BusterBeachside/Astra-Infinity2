@@ -168,10 +168,88 @@ export const ChallengeService = {
         };
     },
 
+    evaluateProgressionMission: (mission: Challenge, progress: UserProgress) => {
+        if (!mission || mission.type !== 'progression') return;
+
+        const templateId = mission.templateId;
+
+        if (templateId === 'buy_showboat') {
+            if (progress.upgrades?.showboat) {
+                mission.progress = mission.target;
+                mission.completed = true;
+            }
+        } else if (templateId === 'buy_fortune') {
+            if (progress.upgrades?.permDoubleCoins) {
+                mission.progress = mission.target;
+                mission.completed = true;
+            }
+        } else if (templateId === 'buy_upgrade') {
+            const totalUpgrades = (progress.upgrades?.maxShields || 0) + 
+                                  (progress.upgrades?.durationSlow || 0) + 
+                                  (progress.upgrades?.durationShrink || 0) + 
+                                  (progress.upgrades?.grazeBonus || 0) + 
+                                  (progress.upgrades?.showboat ? 1 : 0) + 
+                                  (progress.upgrades?.permDoubleCoins ? 1 : 0);
+            if (totalUpgrades > 0 || (progress.stats?.lifetimeCoinsSpent || 0) > 0) {
+                mission.progress = mission.target;
+                mission.completed = true;
+            }
+        } else if (templateId === 'buy_trail') {
+            if ((progress.unlockedTrails?.length || 0) > 1) {
+                mission.progress = mission.target;
+                mission.completed = true;
+            }
+        } else if (templateId === 'buy_skin') {
+            if ((progress.unlockedSkins?.length || 0) > 1) {
+                mission.progress = mission.target;
+                mission.completed = true;
+            }
+        } else if (templateId === 'own_trails') {
+            const count = progress.unlockedTrails ? progress.unlockedTrails.length : 1;
+            mission.progress = Math.max(mission.progress, count);
+            if (mission.progress >= mission.target) mission.completed = true;
+        } else if (templateId === 'own_skins') {
+            const count = progress.unlockedSkins ? progress.unlockedSkins.length : 1;
+            mission.progress = Math.max(mission.progress, count);
+            if (mission.progress >= mission.target) mission.completed = true;
+        } else if (templateId === 'own_coins') {
+            mission.progress = Math.max(mission.progress, progress.coins || 0);
+            if (mission.progress >= mission.target) mission.completed = true;
+        } else if (templateId === 'complete_missions') {
+            const count = progress.stats ? (progress.stats.lifetimeMissionsCompleted || 0) : 0;
+            mission.progress = Math.max(mission.progress, count);
+            if (mission.progress >= mission.target) mission.completed = true;
+        } else if (templateId.startsWith('upgrade_')) {
+            const upgradeKey = templateId.replace('upgrade_', '') as keyof typeof progress.upgrades;
+            const level = (progress.upgrades?.[upgradeKey] as number) || 0;
+            mission.progress = Math.max(mission.progress, level);
+            if (mission.progress >= mission.target) mission.completed = true;
+        } else if (templateId === 'showboat_count') {
+            const count = progress.stats ? (progress.stats.totalShowboats || 0) : 0;
+            mission.progress = Math.max(mission.progress, count);
+            if (mission.progress >= mission.target) mission.completed = true;
+        } else if (templateId === 'graze_time') {
+            const count = progress.stats ? (progress.stats.totalTimeGrazed || 0) : 0;
+            mission.progress = Math.max(mission.progress, count);
+            if (mission.progress >= mission.target) mission.completed = true;
+        } else if (templateId === 'survive_time') {
+            const totalTime = progress.stats ? ((progress.stats.totalTimeNormal || 0) + (progress.stats.totalTimeHardcore || 0)) : 0;
+            mission.progress = Math.max(mission.progress, totalTime);
+            if (mission.progress >= mission.target) mission.completed = true;
+        }
+
+        if (mission.progress >= mission.target) {
+            mission.completed = true;
+        }
+    },
+
     ensureProgressionMission: (progress: UserProgress) => {
-        // Check if we have an active progression mission
-        const hasActive = progress.activeChallenges.some(c => c.type === 'progression');
-        if (hasActive) return;
+        // Evaluate active progression mission if one exists
+        const existingMission = progress.activeChallenges.find(c => c.type === 'progression');
+        if (existingMission) {
+            ChallengeService.evaluateProgressionMission(existingMission, progress);
+            return;
+        }
 
         // Get next mission based on index
         const idx = progress.progressionMissionIndex || 0;
@@ -190,25 +268,8 @@ export const ChallengeService = {
                 claimed: false
             };
 
-            // Initialize progress for "Own" missions
-            if (template.templateId === 'own_trails') {
-                mission.progress = progress.unlockedTrails ? progress.unlockedTrails.length : 1;
-            } else if (template.templateId === 'own_skins') {
-                mission.progress = progress.unlockedSkins ? progress.unlockedSkins.length : 1;
-            } else if (template.templateId === 'complete_missions') {
-                mission.progress = progress.stats ? (progress.stats.lifetimeMissionsCompleted || 0) : 0;
-            } else if (template.templateId === 'own_coins') {
-                mission.progress = progress.coins;
-            } else if (template.templateId.startsWith('upgrade_')) {
-                const upgradeKey = template.templateId.replace('upgrade_', '') as keyof typeof progress.upgrades;
-                mission.progress = (progress.upgrades[upgradeKey] as number) || 0;
-            } else if (template.templateId === 'buy_fortune' && progress.upgrades.permDoubleCoins) {
-                mission.progress = 1;
-            }
-
-            if (mission.progress >= mission.target) {
-                mission.completed = true;
-            }
+            // Evaluate if mission criteria was ALREADY completed prior to unlocking this mission index
+            ChallengeService.evaluateProgressionMission(mission, progress);
 
             progress.activeChallenges.push(mission);
         }
