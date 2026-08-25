@@ -3,6 +3,7 @@ import { CONSTANTS, COLORS } from '../constants';
 import * as Logic from '../services/gameLogic';
 import * as Storage from '../services/storage';
 import { saveReplay } from '../services/storage';
+import { decompressReplay } from '../services/replayCompression';
 import { RNG, VisualRNG } from '../services/rng';
 import { audioManager } from '../services/audioManager';
 import { ChallengeService } from '../services/challengeService';
@@ -197,9 +198,10 @@ export const useGameActions = ({
         audioManager.playGameTheme();
     };
 
-    const startReplay = (replay: ReplayData) => {
-        const width = replay.width || 100;
-        const height = replay.height || 100;
+    const startReplay = (replayData: ReplayData) => {
+        const replay = decompressReplay(replayData);
+        const width = replay.width || gameStateRef.current.width || 800;
+        const height = replay.height || gameStateRef.current.height || 600;
         
         if (canvasRef.current) {
             canvasRef.current.width = width;

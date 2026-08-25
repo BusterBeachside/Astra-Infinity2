@@ -18,7 +18,14 @@ export async function getWebsimUser() {
 
 async function runSql(sql: string) {
     try {
-        const response = await fetch('/api/v1/sql/?' + new URLSearchParams({ sql }));
+        let response = await fetch('/api/v1/sql/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sql })
+        });
+        if (!response.ok) {
+            response = await fetch('/api/v1/sql/?' + new URLSearchParams({ sql }));
+        }
         if (!response.ok) throw new Error('SQL execution failed');
         return await response.json();
     } catch (err) {
@@ -123,13 +130,28 @@ export const websimService = {
             avatar_url: row.avatar_url,
             score: row.score,
             mode: row.mode,
-            metadata: row.metadata ? JSON.parse(row.metadata) : null,
-            replay_path: row.replay_data ? row.id : null,
+            metadata: row.metadata ? (typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata) : null,
+            replay_path: (row.replay_data && row.replay_data !== 'yes' && row.replay_data.length > 5) ? row.id : null,
             created_at: row.created_at
         }));
 
         // Filter out any entries that fail anti-cheat security checks
         return entries.filter(scoreVerifier.sanitizeLeaderboardEntry).slice(0, 50);
+    },
+
+    async downloadReplay(id: string): Promise<ReplayData | null> {
+        await ensureDb();
+        const res = await runSql(`SELECT replay_data FROM websim_scores WHERE id = '${id}'`);
+        if (!res || !res.rows || res.rows.length === 0) return null;
+        const rawData = res.rows[0].replay_data;
+        if (!rawData || rawData === 'yes' || rawData === '') return null;
+        try {
+            const parsed = typeof rawData === 'string' ? JSON.parse(rawData) : rawData;
+            return decompressReplay(parsed);
+        } catch (e) {
+            console.error("[Websim] Error parsing replay data:", e);
+            return null;
+        }
     },
 
     async submitScore(score: number, mode: string, metadata: any, replay: ReplayData | null) {
@@ -163,11 +185,12 @@ export const websimService = {
                 const compressed = compressReplay(replay);
                 replayStr = JSON.stringify(compressed).replace(/'/g, "''");
             } catch (e) {
-                replayStr = 'yes';
+                console.error("[Websim] Error compressing replay:", e);
+                replayStr = '';
             }
         }
 
-        const sql = `INSERT INTO websim_scores (id, user_id, username, avatar_url, score, mode, metadata, replay_data, created_at) VALUES ('${id}', '${user.id}', '${user.username.replace(/'/g, "''")}', '${user.avatar_url || ''}', ${score}, '${mode}', '${metaStr.replace(/'/g, "''")}', '${replayStr ? 'yes' : ''}', '${createdAt}');`;
+        const sql = `INSERT INTO websim_scores (id, user_id, username, avatar_url, score, mode, metadata, replay_data, created_at) VALUES ('${id}', '${user.id}', '${user.username.replace(/'/g, "''")}', '${user.avatar_url || ''}', ${score}, '${mode}', '${metaStr.replace(/'/g, "''")}', '${replayStr}', '${createdAt}');`;
         await runSql(sql);
         return { success: true, proofToken: verification.proofToken };
     }

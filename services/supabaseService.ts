@@ -1,6 +1,7 @@
 import { supabase, GAME_SLUG } from './supabase';
 import { UserProgress, GameSettings, HighScoreEntry, ReplayData, OnlineProfile, LeaderboardEntry } from '../types';
 import { isWebsim, websimService } from './websimService';
+import { decompressReplay } from './replayCompression';
 
 let cachedGameId: string | null = null;
 let cachedUser: any = null;
@@ -337,6 +338,7 @@ export const supabaseService = {
     },
 
     async downloadReplay(path: string): Promise<ReplayData | null> {
+        if (isWebsim()) return websimService.downloadReplay(path);
         const { data, error } = await supabase.storage
             .from('game-replays')
             .download(path);
@@ -344,7 +346,13 @@ export const supabaseService = {
         if (error || !data) return null;
 
         const text = await data.text();
-        return JSON.parse(text);
+        try {
+            const parsed = JSON.parse(text);
+            return decompressReplay(parsed);
+        } catch (e) {
+            console.error("Failed to parse downloaded replay:", e);
+            return null;
+        }
     },
 
     // --- Underdog ID Auth ---
