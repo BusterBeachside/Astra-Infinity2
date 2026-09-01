@@ -71,7 +71,7 @@ export const calculateCoins = (
         checkpointMult,
         titansSurvived,
         titanBonus,
-        isHardcore: gameMode === 'hardcore' || (gameMode === 'chaos' && !!chaosModules?.onTop),
+        isHardcore: gameMode === 'hardcore',
         isDouble: doubleCoins,
         isPermDouble: permDouble,
         chaosMultiplier: gameMode === 'chaos' ? chaosMult : undefined,

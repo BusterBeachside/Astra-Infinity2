@@ -133,10 +133,21 @@ const GameCanvas: React.FC = () => {
       setUiState(prev => ({ ...prev, loadingMessage: 'SYNCHRONIZING PILOT DATA...' }));
       try {
           const onlineData = await supabaseService.fetchUserData();
-          if (onlineData) {
-              const newProgress = { 
+          if (onlineData && onlineData.progress) {
+              const newProgress: UserProgress = { 
                   ...userProgressRef.current, 
+                  ...onlineData.progress,
                   coins: onlineData.progress.coins ?? userProgressRef.current.coins,
+                  upgrades: {
+                      ...userProgressRef.current.upgrades,
+                      ...(onlineData.progress.upgrades || {})
+                  },
+                  unlockedTrails: onlineData.progress.unlockedTrails || userProgressRef.current.unlockedTrails,
+                  equippedTrail: onlineData.progress.equippedTrail || userProgressRef.current.equippedTrail,
+                  unlockedSkins: onlineData.progress.unlockedSkins || userProgressRef.current.unlockedSkins,
+                  equippedSkin: onlineData.progress.equippedSkin || userProgressRef.current.equippedSkin,
+                  activeChallenges: onlineData.progress.activeChallenges || userProgressRef.current.activeChallenges,
+                  progressionMissionIndex: onlineData.progress.progressionMissionIndex ?? userProgressRef.current.progressionMissionIndex,
                   stats: { ...userProgressRef.current.stats, ...(onlineData.progress.stats || {}) }
               };
               setUserProgress(newProgress);

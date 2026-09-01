@@ -151,9 +151,10 @@ export const websimService = {
         if (!user) return;
 
         if (progress.upgrades) {
-            progress.upgrades.maxShields = Math.min(5, Math.max(0, progress.upgrades.maxShields || 0));
-            progress.upgrades.durationSlow = Math.min(5, Math.max(0, progress.upgrades.durationSlow || 0));
-            progress.upgrades.durationShrink = Math.min(5, Math.max(0, progress.upgrades.durationShrink || 0));
+            progress.upgrades.maxShields = Math.max(0, progress.upgrades.maxShields || 0);
+            progress.upgrades.durationSlow = Math.max(0, progress.upgrades.durationSlow || 0);
+            progress.upgrades.durationShrink = Math.max(0, progress.upgrades.durationShrink || 0);
+            progress.upgrades.grazeBonus = Math.max(0, progress.upgrades.grazeBonus || 0);
         }
 
         const payload = { progress, settings, updated_at: new Date().toISOString() };

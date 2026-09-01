@@ -209,7 +209,7 @@ export const scoreVerifier = {
         // 7. Progression & Account Upgrade Sanity Checks
         const upgrades = metadata?.upgrades || replay?.upgrades;
         if (upgrades) {
-            if ((upgrades.maxShields || 0) > 5 || (upgrades.durationSlow || 0) > 5 || (upgrades.durationShrink || 0) > 5) {
+            if ((upgrades.maxShields || 0) > 99 || (upgrades.durationSlow || 0) > 99 || (upgrades.durationShrink || 0) > 99 || (upgrades.grazeBonus || 0) > 99) {
                 return { valid: false, reason: 'ILLEGAL_UPGRADE_LEVELS' };
             }
         }
