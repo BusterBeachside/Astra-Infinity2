@@ -30,13 +30,130 @@ export async function getWebsimUser() {
     return getFallbackWebsimUser();
 }
 
+let sqlApiDisabled = false;
+
+function localSqlEngine(sql: string): any {
+    const cleanSql = sql.trim();
+
+    if (/^CREATE TABLE/i.test(cleanSql)) {
+        return { rows: [], success: true };
+    }
+
+    if (/^INSERT OR REPLACE INTO websim_user_data/i.test(cleanSql) || /^INSERT INTO websim_user_data/i.test(cleanSql)) {
+        const match = cleanSql.match(/VALUES\s*\('([^']+)',\s*([\d.]+),\s*'((?:[^']|'')+)',\s*'((?:[^']|'')+)'/i);
+        if (match) {
+            const uid = match[1];
+            try {
+                const stats = JSON.parse(match[3].replace(/''/g, "'"));
+                const settings = JSON.parse(match[4].replace(/''/g, "'"));
+                saveLocalUserData(uid, { progress: stats, settings, updated_at: new Date().toISOString() });
+            } catch (e) {
+                // ignore parse error
+            }
+        }
+        return { rows: [], changes: 1 };
+    }
+
+    if (/^SELECT .* FROM websim_user_data/i.test(cleanSql)) {
+        const match = cleanSql.match(/user_id\s*=\s*'([^']+)'/i);
+        const userId = match ? match[1] : '';
+        const data = getLocalUserData(userId);
+        if (data) {
+            return {
+                rows: [{
+                    user_id: userId,
+                    currency: data.progress?.coins || 0,
+                    stats: JSON.stringify(data.progress || {}),
+                    settings: JSON.stringify(data.settings || {}),
+                    updated_at: data.updated_at || new Date().toISOString()
+                }]
+            };
+        }
+        return { rows: [] };
+    }
+
+    if (/^SELECT .* FROM websim_scores/i.test(cleanSql)) {
+        let scores = getLocalScores();
+
+        const modeMatch = cleanSql.match(/mode\s*=\s*'([^']+)'/i);
+        if (modeMatch) {
+            scores = scores.filter(s => s.mode === modeMatch[1]);
+        }
+
+        const idMatch = cleanSql.match(/id\s*=\s*'([^']+)'/i);
+        if (idMatch) {
+            scores = scores.filter(s => s.id === idMatch[1]);
+        }
+
+        const userMatch = cleanSql.match(/user_id\s*=\s*'([^']+)'/i);
+        const usernameMatch = cleanSql.match(/username\s*=\s*'([^']+)'/i);
+        if (userMatch || usernameMatch) {
+            const uid = userMatch ? userMatch[1] : '';
+            const uname = usernameMatch ? usernameMatch[1] : '';
+            scores = scores.filter(s => s.user_id === uid || (s.username && s.username.toLowerCase() === uname.toLowerCase()));
+        }
+
+        scores.sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
+
+        const limitMatch = cleanSql.match(/LIMIT\s+(\d+)/i);
+        if (limitMatch) {
+            scores = scores.slice(0, parseInt(limitMatch[1], 10));
+        }
+
+        return { rows: scores };
+    }
+
+    if (/^UPDATE websim_scores/i.test(cleanSql)) {
+        const idMatch = cleanSql.match(/id\s*=\s*'([^']+)'/i);
+        if (idMatch) {
+            const targetId = idMatch[1];
+            const scoreMatch = cleanSql.match(/score\s*=\s*([\d.]+)/i);
+            const metaMatch = cleanSql.match(/metadata\s*=\s*'((?:[^']|'')+)'/i);
+            const replayMatch = cleanSql.match(/replay_data\s*=\s*'((?:[^']|'')+)'/i);
+
+            const scores = getLocalScores();
+            const entry = scores.find(s => s.id === targetId);
+            if (entry) {
+                if (scoreMatch) entry.score = parseFloat(scoreMatch[1]);
+                if (metaMatch) {
+                    try { entry.metadata = JSON.parse(metaMatch[1].replace(/''/g, "'")); } catch (e) {}
+                }
+                if (replayMatch) entry.replay_data = replayMatch[1].replace(/''/g, "'");
+                entry.created_at = new Date().toISOString();
+                localStorage.setItem(LOCAL_SCORES_KEY, JSON.stringify(scores));
+            }
+        }
+        return { rows: [], changes: 1 };
+    }
+
+    if (/^DELETE FROM websim_scores/i.test(cleanSql)) {
+        const notIdMatch = cleanSql.match(/id\s*!=\s*'([^']+)'/i);
+        if (notIdMatch) {
+            const keepId = notIdMatch[1];
+            const scores = getLocalScores().filter(s => s.id === keepId);
+            localStorage.setItem(LOCAL_SCORES_KEY, JSON.stringify(scores));
+        }
+        return { rows: [], changes: 1 };
+    }
+
+    if (/^INSERT INTO websim_scores/i.test(cleanSql)) {
+        return { rows: [], changes: 1 };
+    }
+
+    return { rows: [] };
+}
+
 async function runSql(sql: string) {
+    if (sqlApiDisabled) {
+        return localSqlEngine(sql);
+    }
+
     // 1. Direct window.websim SQL methods if exposed by the host
     const w = typeof window !== 'undefined' ? (window as any).websim : null;
     if (w && typeof w.sql === 'function') {
         try {
             const res = await w.sql(sql);
-            if (res) return res;
+            if (res !== null && res !== undefined) return res;
         } catch (e) {
             console.warn('[Websim DB] window.websim.sql failed:', e);
         }
@@ -44,48 +161,29 @@ async function runSql(sql: string) {
     if (w && typeof w.query === 'function') {
         try {
             const res = await w.query(sql);
-            if (res) return res;
+            if (res !== null && res !== undefined) return res;
         } catch (e) {
             console.warn('[Websim DB] window.websim.query failed:', e);
         }
     }
 
-    // 2. HTTP endpoints (POST first, then GET fallbacks)
+    // 2. HTTP endpoints (POST first)
     const headers = { 'Content-Type': 'application/json' };
     const body = JSON.stringify({ sql, query: sql });
 
-    // Endpoint 1: POST /api/v1/sql
     try {
         const res = await fetch('/api/v1/sql', { method: 'POST', headers, body });
-        if (res.ok) return await res.json();
-    } catch (e) {
-        // Fall through to next endpoint
-    }
-
-    // Endpoint 2: POST /api/v1/sql/
-    try {
-        const res = await fetch('/api/v1/sql/', { method: 'POST', headers, body });
-        if (res.ok) return await res.json();
-    } catch (e) {
-        // Fall through to next endpoint
-    }
-
-    // Endpoint 3: GET query parameter fallback (only for queries safe for URL length)
-    if (sql.length < 4000) {
-        try {
-            const encoded = encodeURIComponent(sql);
-            let res = await fetch(`/api/v1/sql?query=${encoded}`);
-            if (!res.ok) res = await fetch(`/api/v1/sql?sql=${encoded}`);
-            if (!res.ok) res = await fetch(`/api/v1/sql/?query=${encoded}`);
-            if (!res.ok) res = await fetch(`/api/v1/sql/?sql=${encoded}`);
-            if (res.ok) return await res.json();
-        } catch (e) {
-            console.warn('[Websim DB] GET query fallback failed:', e);
+        if (res.status === 403 || res.status === 404) {
+            sqlApiDisabled = true;
+            return localSqlEngine(sql);
         }
+        if (res.ok) return await res.json();
+    } catch (e) {
+        // Fall through to local engine
     }
 
-    console.warn('[Websim DB] All SQL execution strategies failed for query:', sql.slice(0, 120));
-    return null;
+    sqlApiDisabled = true;
+    return localSqlEngine(sql);
 }
 
 let dbInitialized = false;
@@ -290,8 +388,13 @@ export const websimService = {
         await ensureDb();
         const res = await runSql(`SELECT * FROM websim_scores WHERE mode = '${mode}' ORDER BY score DESC LIMIT 100`);
         const rows = extractRows(res);
-        if (rows.length > 0) {
+        if (rows && rows.length > 0) {
             allEntries.push(...rows.map(mapEntry));
+        }
+
+        if (allEntries.length === 0) {
+            const localScores = getLocalScores().filter(s => s.mode === mode).map(mapEntry);
+            allEntries.push(...localScores);
         }
 
         // Deduplicate: The Hall of Fame strictly shows ONLY ONE best score per player
