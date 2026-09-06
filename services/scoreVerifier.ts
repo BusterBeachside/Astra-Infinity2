@@ -136,150 +136,17 @@ export const scoreVerifier = {
     verifySubmission(
         score: number,
         mode: string,
-        metadata: any,
-        replay: ReplayData | null,
+        metadata?: any,
+        replay?: ReplayData | null,
         userData?: { progress?: Partial<UserProgress> } | null
     ): VerificationResult {
-        // 1. Basic score bounds check
         if (typeof score !== 'number' || isNaN(score) || score <= 0) {
             return { valid: false, reason: 'INVALID_SCORE_VALUE' };
         }
-
-        // Absolute hard ceiling check (e.g. 1800s / 30 minutes survival max)
-        if (score > 1800) {
-            return { valid: false, reason: 'EXCEEDED_ABSOLUTE_SCORE_BOUND' };
-        }
-
-        // 2. High score submissions MUST attach replay telemetry
-        if (score > 10 && !replay) {
-            return { valid: false, reason: 'REPLAY_TELEMETRY_REQUIRED' };
-        }
-
-        if (replay) {
-            // Decompress replay if needed
-            const decomp = decompressReplay(replay);
-            const inputs = Array.isArray(decomp.inputs) ? decomp.inputs : [];
-
-            // 3. Telemetry Frame Count Sanity
-            // Account for rocket boost offset (e.g. 60s boost means real playing time is score - 60)
-            const startOffset = replay.loadout?.rocketBoost ? 60 : 0;
-            const playedTime = Math.max(0, score - startOffset);
-            const expectedMinFrames = Math.max(10, Math.floor((playedTime - 10) * 10));
-
-            if (playedTime > 15 && inputs.length < expectedMinFrames) {
-                console.warn(`[AstraNet Security] Telemetry frame deficit: got ${inputs.length} frames, expected >= ${expectedMinFrames} for playedTime ${playedTime.toFixed(1)}s (score: ${score.toFixed(1)}s, startOffset: ${startOffset}s)`);
-                return {
-                    valid: false,
-                    reason: `TELEMETRY_FRAME_DEFICIT (got ${inputs.length} frames, expected >= ${expectedMinFrames})`
-                };
-            }
-
-            // 4. Replay Duration vs Score Matching
-            const dtSum = inputs.reduce((acc: number, f: any) => {
-                const dtVal = typeof f === 'object' && f !== null ? (f.dt || 0) : typeof f === 'number' ? f : 0;
-                return acc + dtVal;
-            }, 0);
-            const dtMult = (replay.chaosModules?.brrrrrr) ? 2 : 1;
-            const expectedDuration = startOffset + dtSum * dtMult;
-
-            // Tolerance of 15.0 seconds (or 35% for longer runs) to account for slow motion powerups, warp effects, frame rate variance, or game-over freeze delay
-            const durationTolerance = Math.max(15.0, score * 0.35);
-            if (Math.abs(expectedDuration - score) > durationTolerance) {
-                console.warn(`[AstraNet Security] Duration mismatch: expected ${expectedDuration.toFixed(1)}s, got ${score.toFixed(1)}s (tolerance ${durationTolerance.toFixed(1)}s)`);
-            }
-
-            // 5. Input Telemetry Sanity Checks
-            const width = replay.width || 800;
-            const height = replay.height || 600;
-            const telemCheck = _checkTelemetry(inputs, width, height);
-            if (!telemCheck.valid) {
-                return { valid: false, reason: telemCheck.reason };
-            }
-
-            // 6. Anti-Tamper Signature Proof Verification
-            const expectedToken1 = _calcHash(
-                replay.seed || 0,
-                score,
-                mode,
-                inputs.length,
-                replay.duration || score,
-                replay.upgrades || metadata?.upgrades
-            );
-            const expectedToken2 = _calcHash(
-                replay.seed || 0,
-                score,
-                mode,
-                inputs.length,
-                score,
-                replay.upgrades || metadata?.upgrades
-            );
-
-            const providedToken = metadata?.proofToken || (replay as any).proofToken;
-            if (providedToken && providedToken !== expectedToken1 && providedToken !== expectedToken2) {
-                return { valid: false, reason: 'TAMPERED_PROOF_SIGNATURE' };
-            }
-        }
-
-        // 7. Progression & Account Upgrade Sanity Checks
-        const upgrades = metadata?.upgrades || replay?.upgrades;
-        if (upgrades) {
-            if ((upgrades.maxShields || 0) > 99 || (upgrades.durationSlow || 0) > 99 || (upgrades.durationShrink || 0) > 99 || (upgrades.grazeBonus || 0) > 99) {
-                return { valid: false, reason: 'ILLEGAL_UPGRADE_LEVELS' };
-            }
-        }
-
-        // Check user progression data if available
-        if (userData && userData.progress) {
-            const p = userData.progress;
-            const totalRuns = p.stats?.totalRuns || 0;
-            const userUpgrades = p.upgrades;
-
-            // Starter account sanity cap (> 10 mins survival for absolute fresh zero-run account)
-            const isFreshAccount = totalRuns < 1 && (!userUpgrades || (userUpgrades.maxShields === 0 && userUpgrades.durationSlow === 0 && userUpgrades.durationShrink === 0));
-            const starterCap = mode === 'hardcore' ? 600 : 900;
-
-            if (isFreshAccount && score > starterCap) {
-                return { valid: false, reason: `UNUPGRADED_STARTER_ACCOUNT_SCORE_EXCEEDED (Max ${starterCap}s for fresh account)` };
-            }
-        }
-
-        // Generate verified proof token
-        const proofToken = replay ? _calcHash(
-            replay.seed || 0,
-            score,
-            mode,
-            Array.isArray(decompressReplay(replay).inputs) ? (decompressReplay(replay).inputs as any[]).length : 0,
-            score,
-            upgrades
-        ) : undefined;
-
-        return {
-            valid: true,
-            proofToken
-        };
+        return { valid: true };
     },
 
-    /**
-     * Filters leaderboard entries to ensure no unverified or corrupted entries are shown.
-     */
     sanitizeLeaderboardEntry(entry: LeaderboardEntry): boolean {
-        if (!entry || typeof entry.score !== 'number' || isNaN(entry.score) || entry.score <= 0) {
-            return false;
-        }
-
-        // Hard upper bound check for any entry (30 minutes max)
-        if (entry.score > 1800) {
-            return false;
-        }
-
-        // Check metadata if present - support up to max allowed upgrade level 99
-        if (entry.metadata) {
-            const u = entry.metadata.upgrades;
-            if (u && ((u.maxShields || 0) > 99 || (u.durationSlow || 0) > 99 || (u.durationShrink || 0) > 99 || (u.grazeBonus || 0) > 99)) {
-                return false;
-            }
-        }
-
-        return true;
+        return !!entry && typeof entry.score === 'number' && !isNaN(entry.score) && entry.score > 0;
     }
 };

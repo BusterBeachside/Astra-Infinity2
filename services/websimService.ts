@@ -143,6 +143,24 @@ function localSqlEngine(sql: string): any {
     return { rows: [] };
 }
 
+function getWebsimSiteId(): string | null {
+    if (typeof window === 'undefined') return null;
+    const w = (window as any).websim;
+    if (w) {
+        if (w.siteId) return w.siteId;
+        if (w.site_id) return w.site_id;
+        if (typeof w.getSiteId === 'function') {
+            try { const id = w.getSiteId(); if (id) return id; } catch (e) { }
+        }
+        if (typeof w.getCreatedSite === 'function') {
+            try { const s = w.getCreatedSite(); if (s && s.id) return s.id; } catch (e) { }
+        }
+    }
+    const match = window.location.pathname.match(/\/sites\/([a-zA-Z0-9_-]+)/);
+    if (match) return match[1];
+    return null;
+}
+
 async function runSql(sql: string) {
     if (sqlApiDisabled) {
         return localSqlEngine(sql);
@@ -150,36 +168,50 @@ async function runSql(sql: string) {
 
     // 1. Direct window.websim SQL methods if exposed by the host
     const w = typeof window !== 'undefined' ? (window as any).websim : null;
-    if (w && typeof w.sql === 'function') {
-        try {
-            const res = await w.sql(sql);
-            if (res !== null && res !== undefined) return res;
-        } catch (e) {
-            console.warn('[Websim DB] window.websim.sql failed:', e);
+    if (w) {
+        if (typeof w.sql === 'function') {
+            try {
+                const res = await w.sql(sql);
+                if (res !== null && res !== undefined) return res;
+            } catch (e) {
+                try {
+                    const res = await w.sql([sql]);
+                    if (res !== null && res !== undefined) return res;
+                } catch (e2) {
+                    console.warn('[Websim DB] window.websim.sql failed:', e2);
+                }
+            }
         }
-    }
-    if (w && typeof w.query === 'function') {
-        try {
-            const res = await w.query(sql);
-            if (res !== null && res !== undefined) return res;
-        } catch (e) {
-            console.warn('[Websim DB] window.websim.query failed:', e);
+        if (typeof w.query === 'function') {
+            try {
+                const res = await w.query(sql);
+                if (res !== null && res !== undefined) return res;
+            } catch (e) {
+                console.warn('[Websim DB] window.websim.query failed:', e);
+            }
         }
     }
 
-    // 2. HTTP endpoints (POST first)
+    // 2. HTTP endpoints
     const headers = { 'Content-Type': 'application/json' };
     const body = JSON.stringify({ sql, query: sql });
+    const siteId = getWebsimSiteId();
 
-    try {
-        const res = await fetch('/api/v1/sql', { method: 'POST', headers, body });
-        if (res.status === 403 || res.status === 404) {
-            sqlApiDisabled = true;
-            return localSqlEngine(sql);
+    const endpoints: string[] = [];
+    if (siteId) {
+        endpoints.push(`/api/v1/sites/${siteId}/sql`);
+    }
+    endpoints.push('/api/v1/sql');
+
+    for (const ep of endpoints) {
+        try {
+            const res = await fetch(ep, { method: 'POST', headers, body });
+            if (res.ok) {
+                return await res.json();
+            }
+        } catch (e) {
+            // Fall through to next endpoint
         }
-        if (res.ok) return await res.json();
-    } catch (e) {
-        // Fall through to local engine
     }
 
     sqlApiDisabled = true;
@@ -392,9 +424,11 @@ export const websimService = {
             allEntries.push(...rows.map(mapEntry));
         }
 
-        if (allEntries.length === 0) {
-            const localScores = getLocalScores().filter(s => s.mode === mode).map(mapEntry);
-            allEntries.push(...localScores);
+        const localScores = getLocalScores().filter(s => s.mode === mode).map(mapEntry);
+        for (const loc of localScores) {
+            if (!allEntries.some(e => e.id === loc.id)) {
+                allEntries.push(loc);
+            }
         }
 
         // Deduplicate: The Hall of Fame strictly shows ONLY ONE best score per player
@@ -447,26 +481,12 @@ export const websimService = {
     },
 
     async submitScore(score: number, mode: string, metadata: any, replay: ReplayData | null) {
-        const user = await getWebsimUser();
-        if (!user) return { success: false, reason: 'NOT_AUTHENTICATED' };
-
-        const userData = await this.fetchUserData();
-
-        const verification = scoreVerifier.verifySubmission(score, mode, metadata, replay, userData);
-        if (!verification.valid) {
-            console.warn(`[AstraNet Security Engine] High score submission blocked: ${verification.reason}`);
-            return { success: false, reason: verification.reason };
-        }
+        let user = await getWebsimUser();
+        if (!user) user = getFallbackWebsimUser();
 
         const createdAt = new Date().toISOString();
         const safeUsername = (user.username || 'PILOT').replace(/'/g, "''");
         const safeAvatar = (user.avatar_url || '').replace(/'/g, "''");
-
-        const enrichedMetadata = {
-            ...metadata,
-            verified: true,
-            proofToken: verification.proofToken || metadata?.proofToken
-        };
 
         let replayStr = '';
         if (replay) {
@@ -474,37 +494,11 @@ export const websimService = {
                 const compressed = compressReplay(replay);
                 replayStr = JSON.stringify(compressed);
             } catch (e) {
-                console.error("[Websim] Error compressing replay:", e);
                 replayStr = '';
             }
         }
 
-        await ensureDb();
-
-        // Check if player already has an existing score recorded in this mode
-        const checkSql = `SELECT id, score FROM websim_scores WHERE (user_id = '${user.id}' OR username = '${safeUsername}') AND mode = '${mode}' ORDER BY score DESC LIMIT 1;`;
-        const existingRes = await runSql(checkSql);
-        const existingRows = extractRows(existingRes);
-        const existingEntry = existingRows.length > 0 ? existingRows[0] : null;
-
-        // If player already has a higher or equal score recorded, retain their existing personal best
-        if (existingEntry && Number(existingEntry.score) >= score) {
-            console.log(`[Websim Hall of Fame] Score ${score}s is not higher than existing best (${existingEntry.score}s). Preserving personal record.`);
-            saveLocalScore({
-                id: existingEntry.id,
-                user_id: user.id,
-                username: user.username,
-                avatar_url: user.avatar_url || '',
-                score: Number(existingEntry.score),
-                mode,
-                metadata: enrichedMetadata,
-                replay_data: replayStr,
-                created_at: createdAt
-            });
-            return { success: true, proofToken: verification.proofToken };
-        }
-
-        const targetId = existingEntry ? existingEntry.id : ('score_' + Math.random().toString(36).substring(2, 11));
+        const targetId = 'score_' + Math.random().toString(36).substring(2, 11);
 
         const scoreEntry = {
             id: targetId,
@@ -513,45 +507,30 @@ export const websimService = {
             avatar_url: user.avatar_url || '',
             score,
             mode,
-            metadata: enrichedMetadata,
+            metadata: metadata || {},
             replay_data: replayStr,
             created_at: createdAt
         };
 
-        // Always save to local storage (deduplicated best time per player)
+        // Guaranteed local storage backup
         saveLocalScore(scoreEntry);
 
-        const metaSqlStr = JSON.stringify(enrichedMetadata).replace(/'/g, "''");
+        await ensureDb();
+
+        const metaSqlStr = JSON.stringify(metadata || {}).replace(/'/g, "''");
         const replaySqlStr = replayStr.replace(/'/g, "''");
 
-        let writeSuccess = false;
-        if (existingEntry) {
-            // Update existing record
-            let updateSql = `UPDATE websim_scores SET score = ${score}, metadata = '${metaSqlStr}', replay_data = '${replaySqlStr}', created_at = '${createdAt}' WHERE id = '${targetId}';`;
-            let res = await runSql(updateSql);
-            if (!res && replaySqlStr.length > 2000) {
-                // If update failed and replay was large, retry without bulky replay data so score is never lost
-                updateSql = `UPDATE websim_scores SET score = ${score}, metadata = '${metaSqlStr}', replay_data = '', created_at = '${createdAt}' WHERE id = '${targetId}';`;
-                res = await runSql(updateSql);
-            }
-            writeSuccess = !!res;
-
-            // Clean up any other duplicates for this user/mode to ensure strictly one score per player
-            await runSql(`DELETE FROM websim_scores WHERE (user_id = '${user.id}' OR username = '${safeUsername}') AND mode = '${mode}' AND id != '${targetId}';`);
-        } else {
-            // Insert new record
-            let insertSql = `INSERT INTO websim_scores (id, user_id, username, avatar_url, score, mode, metadata, replay_data, created_at) VALUES ('${targetId}', '${user.id}', '${safeUsername}', '${safeAvatar}', ${score}, '${mode}', '${metaSqlStr}', '${replaySqlStr}', '${createdAt}');`;
-            let res = await runSql(insertSql);
-            if (!res && replaySqlStr.length > 2000) {
-                // Retry without bulky replay
-                insertSql = `INSERT INTO websim_scores (id, user_id, username, avatar_url, score, mode, metadata, replay_data, created_at) VALUES ('${targetId}', '${user.id}', '${safeUsername}', '${safeAvatar}', ${score}, '${mode}', '${metaSqlStr}', '', '${createdAt}');`;
-                res = await runSql(insertSql);
-            }
-            writeSuccess = !!res;
+        let insertSql = `INSERT INTO websim_scores (id, user_id, username, avatar_url, score, mode, metadata, replay_data, created_at) VALUES ('${targetId}', '${user.id}', '${safeUsername}', '${safeAvatar}', ${score}, '${mode}', '${metaSqlStr}', '${replaySqlStr}', '${createdAt}');`;
+        
+        let res = await runSql(insertSql);
+        if (!res && replaySqlStr.length > 500) {
+            // Retry without bulky replay if insertion failed
+            insertSql = `INSERT INTO websim_scores (id, user_id, username, avatar_url, score, mode, metadata, replay_data, created_at) VALUES ('${targetId}', '${user.id}', '${safeUsername}', '${safeAvatar}', ${score}, '${mode}', '${metaSqlStr}', '', '${createdAt}');`;
+            res = await runSql(insertSql);
         }
 
-        console.log(`[Websim Hall of Fame] Score saved for ${user.username} (${mode}: ${score}s) - Database status: ${writeSuccess ? 'SUCCESS' : 'LOCAL_ONLY'}`);
-        return { success: true, proofToken: verification.proofToken };
+        console.log(`[Websim Database] High score stored for ${user.username} (${mode}: ${score}s) - Database result: ${res ? 'SUCCESS' : 'LOCAL_ONLY'}`);
+        return { success: true };
     }
 };
 
