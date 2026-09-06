@@ -2,6 +2,7 @@ import { supabase, GAME_SLUG } from './supabase';
 import { UserProgress, GameSettings, HighScoreEntry, ReplayData, OnlineProfile, LeaderboardEntry } from '../types';
 import { isWebsim, websimService } from './websimService';
 import { decompressReplay } from './replayCompression';
+import { scoreVerifier } from './scoreVerifier';
 
 let cachedGameId: string | null = null;
 let cachedUser: any = null;
@@ -322,7 +323,7 @@ export const supabaseService = {
 
         console.log(`[Underdog_ID] Fetched ${data.length} leaderboard entries for mode: ${mode}`, data[0]);
 
-        return data.map((item: any) => ({
+        const rawEntries: LeaderboardEntry[] = data.map((item: any) => ({
             id: item.id,
             user_id: item.user_id,
             username: item.profiles?.username || 'Unknown Pilot',
@@ -335,6 +336,24 @@ export const supabaseService = {
             created_at: item.created_at,
             metadata: item.metadata
         }));
+
+        // Deduplicate: The Hall of Fame strictly shows ONLY ONE best score per player
+        const playerBestMap = new Map<string, LeaderboardEntry>();
+        for (const entry of rawEntries) {
+            const playerKey = (entry.user_id && entry.user_id.trim() !== '')
+                ? entry.user_id
+                : (entry.username || 'PILOT').trim().toLowerCase();
+
+            const existing = playerBestMap.get(playerKey);
+            if (!existing || entry.score > existing.score) {
+                playerBestMap.set(playerKey, entry);
+            }
+        }
+
+        const uniqueEntries = Array.from(playerBestMap.values());
+        uniqueEntries.sort((a, b) => b.score - a.score);
+
+        return uniqueEntries.filter(scoreVerifier.sanitizeLeaderboardEntry).slice(0, limit);
     },
 
     async downloadReplay(path: string): Promise<ReplayData | null> {

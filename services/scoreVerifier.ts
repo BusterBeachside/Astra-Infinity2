@@ -161,9 +161,13 @@ export const scoreVerifier = {
             const inputs = Array.isArray(decomp.inputs) ? decomp.inputs : [];
 
             // 3. Telemetry Frame Count Sanity
-            // A run lasting N seconds must have at least ~10 frames per second minimum
-            const expectedMinFrames = Math.max(10, Math.floor((score - 10) * 10));
-            if (score > 15 && inputs.length < expectedMinFrames) {
+            // Account for rocket boost offset (e.g. 60s boost means real playing time is score - 60)
+            const startOffset = replay.loadout?.rocketBoost ? 60 : 0;
+            const playedTime = Math.max(0, score - startOffset);
+            const expectedMinFrames = Math.max(10, Math.floor((playedTime - 10) * 10));
+
+            if (playedTime > 15 && inputs.length < expectedMinFrames) {
+                console.warn(`[AstraNet Security] Telemetry frame deficit: got ${inputs.length} frames, expected >= ${expectedMinFrames} for playedTime ${playedTime.toFixed(1)}s (score: ${score.toFixed(1)}s, startOffset: ${startOffset}s)`);
                 return {
                     valid: false,
                     reason: `TELEMETRY_FRAME_DEFICIT (got ${inputs.length} frames, expected >= ${expectedMinFrames})`
@@ -175,7 +179,6 @@ export const scoreVerifier = {
                 const dtVal = typeof f === 'object' && f !== null ? (f.dt || 0) : typeof f === 'number' ? f : 0;
                 return acc + dtVal;
             }, 0);
-            const startOffset = replay.loadout?.rocketBoost ? 60 : 0;
             const dtMult = (replay.chaosModules?.brrrrrr) ? 2 : 1;
             const expectedDuration = startOffset + dtSum * dtMult;
 

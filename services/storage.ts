@@ -72,9 +72,20 @@ export const getHighScores = (mode: 'normal' | 'hardcore' | 'chaos'): HighScoreE
 };
 
 export const checkIsHighScore = (score: number, mode: 'normal' | 'hardcore' | 'chaos'): boolean => {
+    if (typeof score !== 'number' || score <= 0) return false;
     const scores = getHighScores(mode);
     if (scores.length < 10) return true;
-    return score > scores[scores.length - 1].score;
+    
+    const lowest = scores[scores.length - 1].score;
+    if (score > lowest) return true;
+
+    const lastInitials = localStorage.getItem('stellar_last_initials') || '';
+    if (lastInitials) {
+        const playerEntry = scores.find(s => s.name === lastInitials.toUpperCase());
+        if (playerEntry && score > playerEntry.score) return true;
+    }
+
+    return false;
 };
 
 export const saveHighScore = async (entry: HighScoreEntry, mode: 'normal' | 'hardcore' | 'chaos', replay: ReplayData | null = null) => {

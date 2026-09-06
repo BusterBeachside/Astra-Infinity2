@@ -169,11 +169,33 @@ function saveLocalUserData(userId: string, data: any) {
 
 function extractRows(res: any): any[] {
     if (!res) return [];
-    if (Array.isArray(res)) return res;
-    if (res.rows && Array.isArray(res.rows)) return res.rows;
-    if (res.data && Array.isArray(res.data)) return res.data;
-    if (res.result && Array.isArray(res.result)) return res.result;
-    return [];
+
+    let rawRows: any[] = [];
+    let cols: string[] | null = null;
+
+    if (Array.isArray(res)) {
+        rawRows = res;
+    } else if (res.rows && Array.isArray(res.rows)) {
+        rawRows = res.rows;
+        if (res.columns && Array.isArray(res.columns)) cols = res.columns;
+    } else if (res.data && Array.isArray(res.data)) {
+        rawRows = res.data;
+        if (res.columns && Array.isArray(res.columns)) cols = res.columns;
+    } else if (res.result && Array.isArray(res.result)) {
+        rawRows = res.result;
+    }
+
+    if (cols && cols.length > 0 && rawRows.length > 0 && Array.isArray(rawRows[0])) {
+        return rawRows.map((r: any[]) => {
+            const obj: any = {};
+            cols!.forEach((col, idx) => {
+                obj[col] = r[idx];
+            });
+            return obj;
+        });
+    }
+
+    return rawRows;
 }
 
 export const websimService = {
@@ -271,9 +293,6 @@ export const websimService = {
         if (rows.length > 0) {
             allEntries.push(...rows.map(mapEntry));
         }
-
-        const localScores = getLocalScores().filter(s => s.mode === mode).map(mapEntry);
-        allEntries.push(...localScores);
 
         // Deduplicate: The Hall of Fame strictly shows ONLY ONE best score per player
         const playerBestMap = new Map<string, LeaderboardEntry>();

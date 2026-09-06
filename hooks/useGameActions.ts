@@ -3,6 +3,8 @@ import { CONSTANTS, COLORS } from '../constants';
 import * as Logic from '../services/gameLogic';
 import * as Storage from '../services/storage';
 import { saveReplay } from '../services/storage';
+import { supabaseService } from '../services/supabaseService';
+import { scoreVerifier } from '../services/scoreVerifier';
 import { decompressReplay } from '../services/replayCompression';
 import { RNG, VisualRNG } from '../services/rng';
 import { audioManager } from '../services/audioManager';
@@ -442,6 +444,40 @@ export const useGameActions = ({
                         isEligible = false;
                     }
                 }
+
+                // Background score submission to ensure run is persisted to database/local storage
+                const replayPayload: ReplayData | null = replayRecordingRef.current ? {
+                    id: lastRecordedReplayIdRef.current || `run_${Date.now()}`,
+                    date: Date.now(),
+                    seed: replayRecordingRef.current.seed,
+                    width: gs.width,
+                    height: gs.height,
+                    gameMode: gs.gameMode,
+                    duration: gs.elapsedTime,
+                    score: gs.elapsedTime,
+                    grazeTime: gs.grazeTime,
+                    showboats: gs.totalShowboats,
+                    upgrades: { ...userProgressRef.current.upgrades },
+                    loadout: { ...activeLoadout.current },
+                    chaosModules: gs.chaosModules,
+                    skinId: playerRef.current.skinId,
+                    trailType: playerRef.current.trailType,
+                    inputs: replayRecordingRef.current.inputs,
+                    version: '2.4.0'
+                } : null;
+
+                const metadata = {
+                    upgrades: userProgressRef.current.upgrades,
+                    skinId: userProgressRef.current.equippedSkin,
+                    trailType: userProgressRef.current.equippedTrail,
+                    mode,
+                    chaosModules: gs.chaosModules,
+                    proofToken: replayPayload ? scoreVerifier.generateProofToken(replayPayload) : undefined
+                };
+
+                supabaseService.submitScore(gs.elapsedTime, mode, metadata, replayPayload).catch((err: any) => {
+                    console.warn('[AstraNet] Background score sync failed:', err);
+                });
 
                 const isHigh = isEligible && Storage.checkIsHighScore(gs.elapsedTime, mode);
                 
