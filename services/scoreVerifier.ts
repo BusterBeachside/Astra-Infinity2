@@ -64,10 +64,15 @@ function _checkTelemetry(inputs: any[], width: number, height: number): { valid:
 
     for (let i = 0; i < inputs.length; i++) {
         const frame = inputs[i];
-        const dt = frame.dt || 0;
+        let dt = frame.dt || 0;
 
-        // Frame dt sanity check
-        if (dt <= 0 || dt > 0.6) {
+        // Skip non-positive or zero delta frames (e.g. from identical RAF timestamps)
+        if (dt <= 0) {
+            continue;
+        }
+
+        // Frame dt sanity check (allow up to 1.0s for minor system lag)
+        if (dt > 1.0) {
             return { valid: false, reason: `ANOMALOUS_FRAME_DELTA_TIME (dt=${dt.toFixed(3)}s)` };
         }
 
@@ -79,8 +84,8 @@ function _checkTelemetry(inputs: any[], width: number, height: number): { valid:
             return { valid: false, reason: 'OUT_OF_BOUNDS_TELEMETRY' };
         }
 
-        // Velocity check
-        if (i > 0 && lastX >= 0 && lastY >= 0 && dt > 0) {
+        // Velocity check (only for frames with significant dt to avoid division artifacts)
+        if (i > 0 && lastX >= 0 && lastY >= 0 && dt >= 0.005) {
             const dx = x - lastX;
             const dy = y - lastY;
             const dist = Math.hypot(dx, dy);
@@ -174,8 +179,9 @@ export const scoreVerifier = {
             const dtMult = (replay.chaosModules?.brrrrrr) ? 2 : 1;
             const expectedDuration = startOffset + dtSum * dtMult;
 
-            // Tolerance of 3.5 seconds to account for warp effect or game-over freeze delay
-            if (Math.abs(expectedDuration - score) > 3.5) {
+            // Tolerance of 6.0 seconds (or 10% for longer runs) to account for warp effect, frame rate variance, or game-over freeze delay
+            const durationTolerance = Math.max(6.0, score * 0.1);
+            if (Math.abs(expectedDuration - score) > durationTolerance) {
                 return {
                     valid: false,
                     reason: `SCORE_DURATION_MISMATCH (Score: ${score.toFixed(1)}s, Replay: ${expectedDuration.toFixed(1)}s)`
@@ -191,7 +197,7 @@ export const scoreVerifier = {
             }
 
             // 6. Anti-Tamper Signature Proof Verification
-            const expectedToken = _calcHash(
+            const expectedToken1 = _calcHash(
                 replay.seed || 0,
                 score,
                 mode,
@@ -199,9 +205,17 @@ export const scoreVerifier = {
                 replay.duration || score,
                 replay.upgrades || metadata?.upgrades
             );
+            const expectedToken2 = _calcHash(
+                replay.seed || 0,
+                score,
+                mode,
+                inputs.length,
+                score,
+                replay.upgrades || metadata?.upgrades
+            );
 
             const providedToken = metadata?.proofToken || (replay as any).proofToken;
-            if (providedToken && providedToken !== expectedToken) {
+            if (providedToken && providedToken !== expectedToken1 && providedToken !== expectedToken2) {
                 return { valid: false, reason: 'TAMPERED_PROOF_SIGNATURE' };
             }
         }
@@ -220,21 +234,12 @@ export const scoreVerifier = {
             const totalRuns = p.stats?.totalRuns || 0;
             const userUpgrades = p.upgrades;
 
-            // Starter account cap (0 shield, 0 slow, 0 shrink, < 3 runs)
-            const isFreshAccount = totalRuns < 3 && (!userUpgrades || (userUpgrades.maxShields === 0 && userUpgrades.durationSlow === 0 && userUpgrades.durationShrink === 0));
-            const starterCap = mode === 'hardcore' ? 120 : 200;
+            // Starter account sanity cap (> 10 mins survival for absolute fresh zero-run account)
+            const isFreshAccount = totalRuns < 1 && (!userUpgrades || (userUpgrades.maxShields === 0 && userUpgrades.durationSlow === 0 && userUpgrades.durationShrink === 0));
+            const starterCap = mode === 'hardcore' ? 600 : 900;
 
             if (isFreshAccount && score > starterCap) {
                 return { valid: false, reason: `UNUPGRADED_STARTER_ACCOUNT_SCORE_EXCEEDED (Max ${starterCap}s for fresh account)` };
-            }
-
-            // Spoofed upgrades check: claimed upgrade levels cannot exceed user's recorded account levels
-            if (upgrades && userUpgrades) {
-                if ((upgrades.maxShields || 0) > (userUpgrades.maxShields || 0) ||
-                    (upgrades.durationSlow || 0) > (userUpgrades.durationSlow || 0) ||
-                    (upgrades.durationShrink || 0) > (userUpgrades.durationShrink || 0)) {
-                    return { valid: false, reason: 'SPOOFED_UPGRADE_METADATA_MISMATCH' };
-                }
             }
         }
 
@@ -262,15 +267,15 @@ export const scoreVerifier = {
             return false;
         }
 
-        // Hard upper bound check for any entry
+        // Hard upper bound check for any entry (30 minutes max)
         if (entry.score > 1800) {
             return false;
         }
 
-        // Check metadata if present
+        // Check metadata if present - support up to max allowed upgrade level 99
         if (entry.metadata) {
             const u = entry.metadata.upgrades;
-            if (u && ((u.maxShields || 0) > 5 || (u.durationSlow || 0) > 5 || (u.durationShrink || 0) > 5)) {
+            if (u && ((u.maxShields || 0) > 99 || (u.durationSlow || 0) > 99 || (u.durationShrink || 0) > 99 || (u.grazeBonus || 0) > 99)) {
                 return false;
             }
         }

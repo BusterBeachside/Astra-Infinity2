@@ -1,5 +1,8 @@
 {
   "name": "Astra Infinity",
   "description": "A high-speed shape dodging arcade game. Control the core, avoid void spikes and titans, and survive the rising void floor.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
