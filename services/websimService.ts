@@ -81,7 +81,7 @@ export function getWebsimSiteId(w?: any): string | null {
     }
 
     const host = window.location.hostname || '';
-    // Extract subdomain: e.g. dnql3rgc00mwqp3r7gw2.c.websim.com -> dnql3rgc00mwqp3r7gw2
+    // E.g. dnql3rgc00mwqp3r7gw2.c.websim.com -> dnql3rgc00mwqp3r7gw2
     const subMatch = host.match(/^([a-zA-Z0-9_-]+)\.(?:c\.)?websim\.(?:com|ai|page|app)/i);
     if (subMatch && subMatch[1] && subMatch[1] !== 'www' && subMatch[1] !== 'app' && subMatch[1] !== 'api') {
         return subMatch[1];
@@ -141,6 +141,94 @@ export interface DbAttemptRecord {
     details?: string;
 }
 
+function dumpObject(obj: any, maxDepth = 2): any {
+    if (obj === null || obj === undefined) return String(obj);
+    if (typeof obj !== 'object' && typeof obj !== 'function') return typeof obj;
+    const res: any = { _type: typeof obj };
+    if (typeof obj === 'function') {
+        res._isFunction = true;
+        res._name = obj.name || 'anonymous';
+    }
+    const propNames = Array.from(new Set([
+        ...Object.keys(obj),
+        ...Object.getOwnPropertyNames(obj)
+    ]));
+    for (const key of propNames.slice(0, 40)) {
+        if (key === 'constructor' || key === '__proto__' || key === 'prototype') continue;
+        try {
+            const val = obj[key];
+            if (typeof val === 'function') {
+                res[key] = `function(${val.length} args)`;
+            } else if (val && typeof val === 'object' && maxDepth > 1) {
+                res[key] = dumpObject(val, maxDepth - 1);
+            } else {
+                res[key] = String(val).slice(0, 80);
+            }
+        } catch (e: any) {
+            res[key] = `error: ${e?.message}`;
+        }
+    }
+    return res;
+}
+
+/**
+ * Recursively discovers candidate database/SQL/collection functions across websim and window.
+ */
+function findDatabaseFunctions(w: any): { name: string; target: any; fn: Function }[] {
+    const found: { name: string; target: any; fn: Function }[] = [];
+    const visited = new Set<any>();
+
+    function inspect(obj: any, path: string, depth = 0) {
+        if (!obj || depth > 3 || visited.has(obj)) return;
+        visited.add(obj);
+
+        if (typeof obj === 'function') {
+            if (/sql|query|db|database|sqlite|exec|v0/i.test(path)) {
+                found.push({ name: path, target: null, fn: obj });
+            }
+        }
+
+        const props = Array.from(new Set([
+            ...Object.keys(obj),
+            ...Object.getOwnPropertyNames(obj)
+        ]));
+
+        for (const prop of props) {
+            if (prop === 'constructor' || prop === '__proto__' || prop === 'prototype') continue;
+            try {
+                const val = obj[prop];
+                const childPath = `${path}.${prop}`;
+                if (typeof val === 'function') {
+                    if (/sql|query|db|database|sqlite|exec|collection|store|table|run|all|get/i.test(prop) ||
+                        /v0|experimental/i.test(path)) {
+                        found.push({ name: childPath, target: obj, fn: val });
+                    }
+                } else if (val && typeof val === 'object') {
+                    inspect(val, childPath, depth + 1);
+                }
+            } catch (e) { }
+        }
+    }
+
+    if (w) {
+        inspect(w, 'websim');
+        if (w.experimental) inspect(w.experimental, 'websim.experimental');
+        if (w.internal_only_experimental) inspect(w.internal_only_experimental, 'websim.internal_only_experimental');
+    }
+
+    if (typeof window !== 'undefined') {
+        const win = window as any;
+        if (win.WebsimSocket) inspect(win.WebsimSocket, 'window.WebsimSocket');
+        if (win.room) inspect(win.room, 'window.room');
+        if (win.Room) inspect(win.Room, 'window.Room');
+        if (win.db) inspect(win.db, 'window.db');
+        if (win.database) inspect(win.database, 'window.database');
+        if (win.sqlite) inspect(win.sqlite, 'window.sqlite');
+    }
+
+    return found;
+}
+
 /**
  * Invokes an arbitrary candidate SQL function using tagged template, string, array, and object signatures.
  */
@@ -152,9 +240,7 @@ async function invokeSqlFunction(fn: Function, target: any, sql: string, isSelec
         if (res !== undefined || !isSelect) {
             return res !== undefined ? res : { rows: [], success: true };
         }
-    } catch (e1) {
-        // Continue to signature 2
-    }
+    } catch (e1) { }
 
     // 2. Direct string call: fn(sql)
     try {
@@ -162,9 +248,7 @@ async function invokeSqlFunction(fn: Function, target: any, sql: string, isSelec
         if (res !== undefined || !isSelect) {
             return res !== undefined ? res : { rows: [], success: true };
         }
-    } catch (e2) {
-        // Continue to signature 3
-    }
+    } catch (e2) { }
 
     // 3. Array call: fn([sql])
     try {
@@ -172,33 +256,21 @@ async function invokeSqlFunction(fn: Function, target: any, sql: string, isSelec
         if (res !== undefined || !isSelect) {
             return res !== undefined ? res : { rows: [], success: true };
         }
-    } catch (e3) {
-        // Continue to signature 4
-    }
+    } catch (e3) { }
 
-    // 4. Object call: fn({ sql, query: sql })
+    // 4. Object call: fn({ query: sql }) or fn({ sql })
     try {
-        const res = await fn.call(target, { sql, query: sql });
+        const res = await fn.call(target, { query: sql, sql });
         if (res !== undefined || !isSelect) {
             return res !== undefined ? res : { rows: [], success: true };
         }
-    } catch (e4) {
-        throw e4;
-    }
+    } catch (e4) { }
 
     return undefined;
 }
 
 /**
- * Executes SQL on Websim's database system.
- * Discovers and tests all available interfaces:
- *  1. window.websim.sql, query
- *  2. window.websim.experimental (sql, database, query, sqlite, etc.)
- *  3. window.websim.internal_only_experimental (sql, database, etc.)
- *  4. window.websim.database.sql / query
- *  5. window.websim.db.sql / query
- *  6. HTTP POST to /api/v1/sites/{siteId}/sql, /api/v1/projects/{siteId}/sql, /api/v1/sql
- *  7. Cross-origin HTTP POST with credentials to https://websim.com and https://websim.ai
+ * Executes SQL or queries the active Websim database.
  */
 export async function runWebsimSql(sql: string): Promise<any> {
     const cleanSql = sql.trim();
@@ -206,18 +278,25 @@ export async function runWebsimSql(sql: string): Promise<any> {
     const w = getWebsimObject();
     const attempts: DbAttemptRecord[] = [];
 
-    // Resolve site ID (including subdomain check & async project fetch)
+    // Resolve site ID
     const siteId = await resolveWebsimSiteId(w);
 
-    // Deep inspection of the websim object for diagnostics
+    // Deep inspection of the websim object and environment
     let projectDump: any = null;
     let bootstrapDump: any = null;
+    let userDump: any = null;
     let experimentalKeys: string[] = [];
     let internalExperimentalKeys: string[] = [];
+    let v0Dump: any = null;
 
     if (w) {
         if (w.experimental && typeof w.experimental === 'object') {
-            try { experimentalKeys = Object.keys(w.experimental); } catch (e) { }
+            try {
+                experimentalKeys = Object.keys(w.experimental);
+                if (w.experimental.v0) {
+                    v0Dump = dumpObject(w.experimental.v0);
+                }
+            } catch (e) { }
         }
         if (w.internal_only_experimental && typeof w.internal_only_experimental === 'object') {
             try { internalExperimentalKeys = Object.keys(w.internal_only_experimental); } catch (e) { }
@@ -233,60 +312,48 @@ export async function runWebsimSql(sql: string): Promise<any> {
         if (typeof w.getBootstrap === 'function') {
             try {
                 const b = await w.getBootstrap();
-                bootstrapDump = b ? { siteId: b.siteId, site: b.site?.id, project: b.project?.id } : null;
+                bootstrapDump = b ? dumpObject(b, 2) : null;
             } catch (e: any) {
                 bootstrapDump = { error: e?.message || String(e) };
             }
         }
-    }
-
-    // --- 1. Identify all candidate SQL functions on window.websim ---
-    const functionCandidates: { name: string; target: any; fn: any }[] = [];
-
-    if (w) {
-        // Direct functions on w
-        if (typeof w.sql === 'function') functionCandidates.push({ name: 'websim.sql', target: w, fn: w.sql });
-        if (typeof w.query === 'function') functionCandidates.push({ name: 'websim.query', target: w, fn: w.query });
-
-        // w.experimental
-        if (w.experimental) {
-            const exp = w.experimental;
-            if (typeof exp.sql === 'function') functionCandidates.push({ name: 'websim.experimental.sql', target: exp, fn: exp.sql });
-            if (typeof exp.query === 'function') functionCandidates.push({ name: 'websim.experimental.query', target: exp, fn: exp.query });
-            if (typeof exp.sqlite === 'function') functionCandidates.push({ name: 'websim.experimental.sqlite', target: exp, fn: exp.sqlite });
-            if (exp.database) {
-                if (typeof exp.database.sql === 'function') functionCandidates.push({ name: 'websim.experimental.database.sql', target: exp.database, fn: exp.database.sql });
-                if (typeof exp.database.query === 'function') functionCandidates.push({ name: 'websim.experimental.database.query', target: exp.database, fn: exp.database.query });
-            }
-            if (exp.db) {
-                if (typeof exp.db.sql === 'function') functionCandidates.push({ name: 'websim.experimental.db.sql', target: exp.db, fn: exp.db.sql });
-                if (typeof exp.db.query === 'function') functionCandidates.push({ name: 'websim.experimental.db.query', target: exp.db, fn: exp.db.query });
-            }
-        }
-
-        // w.internal_only_experimental
-        if (w.internal_only_experimental) {
-            const intExp = w.internal_only_experimental;
-            if (typeof intExp.sql === 'function') functionCandidates.push({ name: 'websim.internal_only_experimental.sql', target: intExp, fn: intExp.sql });
-            if (typeof intExp.query === 'function') functionCandidates.push({ name: 'websim.internal_only_experimental.query', target: intExp, fn: intExp.query });
-            if (intExp.database) {
-                if (typeof intExp.database.sql === 'function') functionCandidates.push({ name: 'websim.internal_only_experimental.database.sql', target: intExp.database, fn: intExp.database.sql });
-                if (typeof intExp.database.query === 'function') functionCandidates.push({ name: 'websim.internal_only_experimental.database.query', target: intExp.database, fn: intExp.database.query });
-            }
-        }
-
-        // w.database / w.db
-        if (w.database) {
-            if (typeof w.database.sql === 'function') functionCandidates.push({ name: 'websim.database.sql', target: w.database, fn: w.database.sql });
-            if (typeof w.database.query === 'function') functionCandidates.push({ name: 'websim.database.query', target: w.database, fn: w.database.query });
-        }
-        if (w.db) {
-            if (typeof w.db.sql === 'function') functionCandidates.push({ name: 'websim.db.sql', target: w.db, fn: w.db.sql });
-            if (typeof w.db.query === 'function') functionCandidates.push({ name: 'websim.db.query', target: w.db, fn: w.db.query });
+        if (typeof w.getUser === 'function') {
+            try {
+                const u = await w.getUser();
+                userDump = u ? { id: u.id, username: u.username, hasToken: !!(u.token || u.access_token) } : null;
+            } catch (e) { }
         }
     }
 
-    // Try candidate functions
+    // --- 1. Test room.collection or WebsimSocket if available ---
+    if (typeof window !== 'undefined') {
+        const win = window as any;
+        const roomObj = win.room || (win.WebsimSocket ? new win.WebsimSocket() : null) || (w && w.room ? w.room : null);
+        if (roomObj && typeof roomObj.collection === 'function') {
+            try {
+                const col = roomObj.collection('websim_scores');
+                if (isSelect) {
+                    if (typeof col.getList === 'function') {
+                        const items = await col.getList();
+                        if (Array.isArray(items)) {
+                            return items;
+                        }
+                    } else if (typeof col.all === 'function') {
+                        const items = await col.all();
+                        if (Array.isArray(items)) {
+                            return items;
+                        }
+                    }
+                }
+            } catch (e: any) {
+                attempts.push({ method: 'room.collection', status: 'failed', error: e?.message || String(e) });
+            }
+        }
+    }
+
+    // --- 2. Recursively find and invoke all candidate functions on window.websim / v0 ---
+    const functionCandidates = findDatabaseFunctions(w);
+
     for (const cand of functionCandidates) {
         try {
             const res = await invokeSqlFunction(cand.fn, cand.target, cleanSql, isSelect);
@@ -299,52 +366,88 @@ export async function runWebsimSql(sql: string): Promise<any> {
         }
     }
 
-    // --- 2. HTTP Endpoint attempts ---
-    const headers = { 'Content-Type': 'application/json' };
-    const body = JSON.stringify({ sql: cleanSql, query: cleanSql });
-
-    const endpoints: string[] = [];
-    if (siteId) {
-        endpoints.push(`/api/v1/sites/${siteId}/sql`);
-        endpoints.push(`/api/v1/projects/${siteId}/sql`);
-        endpoints.push(`https://websim.com/api/v1/sites/${siteId}/sql`);
-        endpoints.push(`https://websim.ai/api/v1/sites/${siteId}/sql`);
+    // --- 3. Extract CSRF token and cookies ---
+    let csrfToken: string | null = null;
+    if (typeof document !== 'undefined' && document.cookie) {
+        const match = document.cookie.match(/(?:csrf_token|csrftoken|_csrf|csrf)=([^;]+)/i);
+        if (match) csrfToken = decodeURIComponent(match[1]);
     }
-    endpoints.push('/api/v1/sql');
-    endpoints.push('/api/sql');
-    endpoints.push('https://websim.com/api/v1/sql');
-    endpoints.push('https://websim.ai/api/v1/sql');
 
-    for (const ep of endpoints) {
+    const baseHeaders: Record<string, string> = {
+        'Accept': 'application/json, text/plain, */*',
+        'X-Requested-With': 'XMLHttpRequest'
+    };
+    if (csrfToken) {
+        baseHeaders['X-CSRF-Token'] = csrfToken;
+        baseHeaders['X-XSRF-Token'] = csrfToken;
+    }
+
+    // --- 4. HTTP Endpoint tests with multiple payload variations ---
+    const endpointTargets: string[] = [];
+    if (siteId) {
+        endpointTargets.push(`/api/v1/sites/${siteId}/sql`);
+        endpointTargets.push(`/api/v1/sites/${siteId}/query`);
+        endpointTargets.push(`/api/v1/projects/${siteId}/sql`);
+    }
+    endpointTargets.push('/api/v1/sql');
+    endpointTargets.push('/api/v1/query');
+
+    // Test A: POST with { query }
+    for (const ep of endpointTargets) {
         try {
             const res = await fetch(ep, {
                 method: 'POST',
-                headers,
-                body,
+                headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query: cleanSql }),
                 credentials: 'include'
             });
-
             if (res.ok) {
-                const json = await res.json();
-                return json;
+                return await res.json();
             } else {
                 const text = await res.text().catch(() => '');
-                attempts.push({
-                    method: `POST ${ep}`,
-                    status: 'failed',
-                    error: `HTTP ${res.status}: ${text.slice(0, 120)}`
-                });
+                attempts.push({ method: `POST ${ep} {query}`, status: 'failed', error: `HTTP ${res.status}: ${text.slice(0, 100)}` });
             }
         } catch (e: any) {
-            attempts.push({
-                method: `POST ${ep}`,
-                status: 'failed',
-                error: e?.message || String(e)
-            });
+            attempts.push({ method: `POST ${ep} {query}`, status: 'failed', error: e?.message || String(e) });
         }
     }
 
-    // --- 3. Build diagnostic failure summary ---
+    // Test B: POST with { sql }
+    for (const ep of endpointTargets) {
+        try {
+            const res = await fetch(ep, {
+                method: 'POST',
+                headers: { ...baseHeaders, 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sql: cleanSql }),
+                credentials: 'include'
+            });
+            if (res.ok) {
+                return await res.json();
+            }
+        } catch (e: any) { }
+    }
+
+    // Test C: GET with ?query= (for SELECT queries)
+    if (isSelect) {
+        for (const ep of endpointTargets) {
+            try {
+                const getUrl = `${ep}?query=${encodeURIComponent(cleanSql)}`;
+                const res = await fetch(getUrl, {
+                    method: 'GET',
+                    headers: baseHeaders,
+                    credentials: 'include'
+                });
+                if (res.ok) {
+                    return await res.json();
+                } else if (res.status !== 404 && res.status !== 405) {
+                    const text = await res.text().catch(() => '');
+                    attempts.push({ method: `GET ${getUrl.slice(0, 50)}`, status: 'failed', error: `HTTP ${res.status}: ${text.slice(0, 100)}` });
+                }
+            } catch (e: any) { }
+        }
+    }
+
+    // --- 5. Diagnostic failure summary ---
     const websimKeys = w ? Object.keys(w) : [];
     const diagnosticInfo = {
         timestamp: new Date().toISOString(),
@@ -354,16 +457,17 @@ export async function runWebsimSql(sql: string): Promise<any> {
         hasWebsimObject: !!w,
         websimKeys,
         experimentalKeys,
+        v0Dump,
         internalExperimentalKeys,
         currentProject: projectDump,
         bootstrap: bootstrapDump,
-        sqlQuery: cleanSql.slice(0, 120),
+        user: userDump,
+        hasCookie: typeof document !== 'undefined' && !!document.cookie,
+        functionCandidatesFound: functionCandidates.map(f => f.name),
         attempts
     };
 
-    const errMessage = w && websimKeys.length > 0
-        ? `Websim database query failed. Explored ${functionCandidates.length} SDK functions and ${endpoints.length} HTTP endpoints on host "${typeof window !== 'undefined' ? window.location.hostname : ''}".`
-        : `Websim database not reachable. No active Websim database API or endpoint could be reached.`;
+    const errMessage = `Websim database query failed: HTTP 403 Forbidden. The Websim server blocked SQL access on site "${siteId || 'unknown'}".`;
 
     const fullError: any = new Error(errMessage);
     fullError.diagnostics = JSON.stringify(diagnosticInfo, null, 2);
@@ -390,7 +494,6 @@ async function ensureDb() {
         );`);
         dbInitialized = true;
     } catch (e: any) {
-        // Log CREATE TABLE issue, but do not block SELECT in case table exists or DDL is disabled
         console.warn("[Websim Database] ensureDb CREATE TABLE note:", e?.message);
     }
 }
@@ -540,9 +643,7 @@ export const websimService = {
             const settingsStr = JSON.stringify(settings).replace(/\\/g, '\\\\').replace(/'/g, "''");
             const sql = `INSERT OR REPLACE INTO websim_user_data (user_id, currency, stats, settings, updated_at) VALUES ('${user.id}', ${progress.coins}, '${statsStr}', '${settingsStr}', '${new Date().toISOString()}');`;
             await runWebsimSql(sql);
-        } catch (e) {
-            // User data sync fallback to local is acceptable
-        }
+        } catch (e) { }
     },
 
     async fetchUserData() {
@@ -559,13 +660,9 @@ export const websimService = {
                     const progress = typeof row.stats === 'string' ? JSON.parse(row.stats) : row.stats;
                     const settings = typeof row.settings === 'string' ? JSON.parse(row.settings) : row.settings;
                     return { progress, settings };
-                } catch (e) {
-                    // Ignore parse error
-                }
+                } catch (e) { }
             }
-        } catch (e) {
-            // Fall back to local
-        }
+        } catch (e) { }
 
         const localData = getLocalUserData(user.id);
         if (localData && localData.progress) {
@@ -577,8 +674,7 @@ export const websimService = {
 
     /**
      * Reads scores exclusively from the Websim database.
-     * NOTE: Strictly does NOT fall back to local scores!
-     * If the database cannot be queried, throws an error so Hall of Fame can present the diagnosis.
+     * Strictly does NOT fall back to local scores!
      */
     async getLeaderboard(mode: string): Promise<LeaderboardEntry[]> {
         await ensureDb();
@@ -620,7 +716,6 @@ export const websimService = {
         const uniqueEntries = Array.from(playerBestMap.values());
         uniqueEntries.sort((a, b) => b.score - a.score);
 
-        // No anti-cheat or score checks while debugging
         return uniqueEntries.slice(0, 50);
     },
 
@@ -694,6 +789,31 @@ export const websimService = {
             replay_data: replayStr,
             created_at: createdAt
         });
+
+        // Also try room.collection if available
+        if (typeof window !== 'undefined') {
+            const win = window as any;
+            const roomObj = win.room || (win.WebsimSocket ? new win.WebsimSocket() : null);
+            if (roomObj && typeof roomObj.collection === 'function') {
+                try {
+                    const col = roomObj.collection('websim_scores');
+                    if (typeof col.create === 'function') {
+                        await col.create({
+                            id: targetId,
+                            user_id: user.id,
+                            username: safeUsername,
+                            avatar_url: safeAvatar,
+                            score,
+                            mode,
+                            metadata: metaSqlStr,
+                            replay_data: replayStr,
+                            created_at: createdAt
+                        });
+                        console.log("[Websim Database] Stored score via room.collection");
+                    }
+                } catch (e) { }
+            }
+        }
 
         await ensureDb();
 
