@@ -3,7 +3,7 @@ import { supabaseService } from '../../services/supabaseService';
 import { isWebsim } from '../../services/websimService';
 import { LeaderboardEntry } from '../../types';
 import { motion, AnimatePresence } from 'motion/react';
-import { Trophy, Clock, User, Play, Download, RefreshCw, ChevronLeft, ChevronRight, Filter, ShieldCheck } from 'lucide-react';
+import { Trophy, Clock, User, Play, Download, RefreshCw, ChevronLeft, ChevronRight, Filter, ShieldCheck, AlertTriangle } from 'lucide-react';
 import { format } from 'date-fns';
 import { AvatarIcon } from './AvatarIcon';
 import { ReplayTooltip } from './ReplayTooltip';
@@ -19,6 +19,9 @@ const OnlineLeaderboard: React.FC<OnlineLeaderboardProps> = ({ initialMode, onMo
     const [mode, setMode] = useState<'normal' | 'hardcore' | 'chaos'>(initialMode || 'normal');
     const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const [diagnostics, setDiagnostics] = useState<string | null>(null);
+    const [showDiagnostics, setShowDiagnostics] = useState(false);
     const [hoveredEntry, setHoveredEntry] = useState<LeaderboardEntry | null>(null);
     const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
 
@@ -41,9 +44,21 @@ const OnlineLeaderboard: React.FC<OnlineLeaderboardProps> = ({ initialMode, onMo
 
     const fetchLeaderboard = async () => {
         setIsLoading(true);
-        const data = await supabaseService.getLeaderboard(mode);
-        setEntries(data);
-        setIsLoading(false);
+        setError(null);
+        setDiagnostics(null);
+        try {
+            const data = await supabaseService.getLeaderboard(mode);
+            setEntries(data);
+        } catch (err: any) {
+            console.error("[OnlineLeaderboard] Failed to load scores:", err);
+            setError(err?.message || 'Failed to load scores from the Websim database.');
+            if (err?.diagnostics) {
+                setDiagnostics(err.diagnostics);
+            }
+            setEntries([]);
+        } finally {
+            setIsLoading(false);
+        }
     };
 
     return (
@@ -96,13 +111,58 @@ const OnlineLeaderboard: React.FC<OnlineLeaderboardProps> = ({ initialMode, onMo
                             <RefreshCw className="w-8 h-8 text-yellow-500 animate-spin" />
                             <div className="text-yellow-500 font-mono text-xs animate-pulse">QUERYING GLOBAL DATABASE...</div>
                         </motion.div>
+                    ) : error ? (
+                        <motion.div
+                            key="error"
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0 }}
+                            className="flex flex-col items-center justify-center py-10 px-6 my-4 bg-red-950/40 border border-red-500/50 rounded text-center max-w-2xl mx-auto"
+                        >
+                            <div className="flex items-center gap-3 text-red-400 mb-2 font-mono font-bold text-sm tracking-wider uppercase">
+                                <AlertTriangle className="w-5 h-5 text-red-400 animate-pulse shrink-0" />
+                                <span>WEBSIM DATABASE CONNECTION FAILED</span>
+                            </div>
+                            <div className="text-gray-200 font-mono text-xs mb-3 max-w-lg leading-relaxed">
+                                {error}
+                            </div>
+                            <div className="text-[10px] font-mono text-yellow-500/90 bg-yellow-500/10 border border-yellow-500/20 px-3 py-1.5 rounded mb-4">
+                                ⚠️ Local score fallback is disabled. Showing live Websim database status only.
+                            </div>
+
+                            {diagnostics && (
+                                <div className="w-full text-left mb-4">
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowDiagnostics(!showDiagnostics)}
+                                        className="text-[10px] font-mono text-gray-400 hover:text-white underline cursor-pointer"
+                                    >
+                                        {showDiagnostics ? '▼ Hide Diagnostic Details' : '▶ Show Diagnostic Audit Details'}
+                                    </button>
+                                    {showDiagnostics && (
+                                        <pre className="mt-2 p-3 bg-black/90 border border-white/10 rounded text-[9px] font-mono text-emerald-400 overflow-x-auto max-h-48 custom-scrollbar">
+                                            {diagnostics}
+                                        </pre>
+                                    )}
+                                </div>
+                            )}
+
+                            <button
+                                type="button"
+                                onClick={fetchLeaderboard}
+                                className="flex items-center gap-2 px-6 py-2 bg-red-600 hover:bg-red-500 text-white font-mono text-xs font-bold uppercase tracking-wider rounded transition-all shadow-[0_0_15px_rgba(239,68,68,0.3)] cursor-pointer"
+                            >
+                                <RefreshCw className="w-3.5 h-3.5" />
+                                RETRY DATABASE QUERY
+                            </button>
+                        </motion.div>
                     ) : entries.length === 0 ? (
                         <motion.div 
                             key="empty"
                             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                             className="flex flex-col items-center justify-center py-20 text-gray-600 font-mono italic"
                         >
-                            NO RECORDS FOUND FOR THIS SECTOR.
+                            NO RECORDS FOUND FOR THIS SECTOR IN THE WEBSIM DATABASE.
                         </motion.div>
                     ) : (
                         <motion.div 
