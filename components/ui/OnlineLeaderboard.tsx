@@ -3,7 +3,7 @@ import { supabaseService } from '../../services/supabaseService';
 import { isWebsim } from '../../services/websimService';
 import { LeaderboardEntry } from '../../types';
 import { motion, AnimatePresence } from 'motion/react';
-import { Trophy, Clock, User, Play, Download, RefreshCw, ChevronLeft, ChevronRight, Filter, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { Trophy, Clock, User, Play, Download, RefreshCw, ChevronLeft, ChevronRight, Filter, ShieldCheck, AlertTriangle, Copy, Check } from 'lucide-react';
 import { format } from 'date-fns';
 import { AvatarIcon } from './AvatarIcon';
 import { ReplayTooltip } from './ReplayTooltip';
@@ -22,8 +22,43 @@ const OnlineLeaderboard: React.FC<OnlineLeaderboardProps> = ({ initialMode, onMo
     const [error, setError] = useState<string | null>(null);
     const [diagnostics, setDiagnostics] = useState<string | null>(null);
     const [showDiagnostics, setShowDiagnostics] = useState(false);
+    const [copied, setCopied] = useState(false);
     const [hoveredEntry, setHoveredEntry] = useState<LeaderboardEntry | null>(null);
     const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
+
+    const handleCopyDiagnostics = () => {
+        const textToCopy = diagnostics || error || '';
+        if (!textToCopy) return;
+
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(textToCopy)
+                .then(() => {
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2500);
+                })
+                .catch(() => fallbackCopy(textToCopy));
+        } else {
+            fallbackCopy(textToCopy);
+        }
+    };
+
+    const fallbackCopy = (text: string) => {
+        try {
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-9999px';
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2500);
+        } catch (err) {
+            console.error("Clipboard copy failed:", err);
+        }
+    };
 
     const handleModeChange = (m: 'normal' | 'hardcore' | 'chaos') => {
         setMode(m);
@@ -132,17 +167,44 @@ const OnlineLeaderboard: React.FC<OnlineLeaderboardProps> = ({ initialMode, onMo
 
                             {diagnostics && (
                                 <div className="w-full text-left mb-4">
-                                    <button
-                                        type="button"
-                                        onClick={() => setShowDiagnostics(!showDiagnostics)}
-                                        className="text-[10px] font-mono text-gray-400 hover:text-white underline cursor-pointer"
-                                    >
-                                        {showDiagnostics ? '▼ Hide Diagnostic Details' : '▶ Show Diagnostic Audit Details'}
-                                    </button>
+                                    <div className="flex items-center justify-between gap-2 mb-1.5 flex-wrap">
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowDiagnostics(!showDiagnostics)}
+                                            className="text-[11px] font-mono text-gray-400 hover:text-white underline cursor-pointer"
+                                        >
+                                            {showDiagnostics ? '▼ Hide Diagnostic Details' : '▶ Show Diagnostic Audit Details'}
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            onClick={handleCopyDiagnostics}
+                                            className={`flex items-center gap-1.5 px-3 py-1 font-mono text-[11px] font-bold uppercase rounded border transition-all cursor-pointer ${
+                                                copied 
+                                                ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/50 shadow-[0_0_10px_rgba(16,185,129,0.3)]' 
+                                                : 'bg-cyan-950/60 text-cyan-400 border-cyan-500/40 hover:bg-cyan-900/80 hover:text-white'
+                                            }`}
+                                        >
+                                            {copied ? (
+                                                <>
+                                                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                                    <span>COPIED TO CLIPBOARD!</span>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Copy className="w-3.5 h-3.5" />
+                                                    <span>COPY DIAGNOSTIC DETAILS</span>
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
+
                                     {showDiagnostics && (
-                                        <pre className="mt-2 p-3 bg-black/90 border border-white/10 rounded text-[9px] font-mono text-emerald-400 overflow-x-auto max-h-48 custom-scrollbar">
-                                            {diagnostics}
-                                        </pre>
+                                        <div className="relative mt-2">
+                                            <pre className="p-3 bg-black/90 border border-white/10 rounded text-[9px] font-mono text-emerald-400 overflow-x-auto max-h-48 custom-scrollbar select-all">
+                                                {diagnostics}
+                                            </pre>
+                                        </div>
                                     )}
                                 </div>
                             )}

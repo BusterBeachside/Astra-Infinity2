@@ -10,14 +10,14 @@ export function getWebsimObject(): any {
             return win.parent.websim;
         }
     } catch (e) {
-        // Ignore cross-origin frame restriction
+        // Cross-origin iframe restriction
     }
     try {
         if (win.top && win.top !== win && win.top.websim) {
             return win.top.websim;
         }
     } catch (e) {
-        // Ignore cross-origin frame restriction
+        // Cross-origin iframe restriction
     }
     return null;
 }
@@ -27,7 +27,7 @@ export const isWebsim = (): boolean => {
     if (getWebsimObject()) return true;
     const host = window.location.hostname || '';
     const href = window.location.href || '';
-    return host.includes('websim.ai') || host.includes('websim.app') || host.includes('websim.page') || host.includes('websim.site') || href.includes('websim');
+    return host.includes('websim.ai') || host.includes('websim.com') || host.includes('websim.app') || host.includes('websim.page') || host.includes('websim.site') || href.includes('websim');
 };
 
 function getFallbackWebsimUser() {
@@ -45,32 +45,82 @@ function getFallbackWebsimUser() {
 
 export async function getWebsimUser() {
     const w = getWebsimObject();
-    if (w && typeof w.getUser === 'function') {
-        try {
-            const user = await w.getUser();
-            if (user && user.id) return user;
-        } catch (e) {
-            console.error("[Websim] Error getting websim user:", e);
+    if (w) {
+        if (typeof w.getUser === 'function') {
+            try {
+                const user = await w.getUser();
+                if (user && user.id) return user;
+            } catch (e) {
+                console.error("[Websim] Error in w.getUser():", e);
+            }
+        }
+        if (typeof w.getCurrentUser === 'function') {
+            try {
+                const user = await w.getCurrentUser();
+                if (user && user.id) return user;
+            } catch (e) {
+                console.error("[Websim] Error in w.getCurrentUser():", e);
+            }
         }
     }
     return getFallbackWebsimUser();
 }
 
-function getWebsimSiteId(): string | null {
+export function getWebsimSiteId(w?: any): string | null {
     if (typeof window === 'undefined') return null;
-    const w = getWebsimObject();
-    if (w) {
-        if (w.siteId) return String(w.siteId);
-        if (w.site_id) return String(w.site_id);
-        if (typeof w.getSiteId === 'function') {
-            try { const id = w.getSiteId(); if (id) return String(id); } catch (e) { }
+    const websimObj = w || getWebsimObject();
+    if (websimObj) {
+        if (websimObj.siteId) return String(websimObj.siteId);
+        if (websimObj.site_id) return String(websimObj.site_id);
+        if (typeof websimObj.getSiteId === 'function') {
+            try { const id = websimObj.getSiteId(); if (id) return String(id); } catch (e) { }
         }
-        if (typeof w.getCreatedSite === 'function') {
-            try { const s = w.getCreatedSite(); if (s && s.id) return String(s.id); } catch (e) { }
+        if (typeof websimObj.getCreatedSite === 'function') {
+            try { const s = websimObj.getCreatedSite(); if (s && s.id) return String(s.id); } catch (e) { }
         }
     }
+
+    const host = window.location.hostname || '';
+    // Extract subdomain: e.g. dnql3rgc00mwqp3r7gw2.c.websim.com -> dnql3rgc00mwqp3r7gw2
+    const subMatch = host.match(/^([a-zA-Z0-9_-]+)\.(?:c\.)?websim\.(?:com|ai|page|app)/i);
+    if (subMatch && subMatch[1] && subMatch[1] !== 'www' && subMatch[1] !== 'app' && subMatch[1] !== 'api') {
+        return subMatch[1];
+    }
+
     const match = window.location.pathname.match(/\/sites\/([a-zA-Z0-9_-]+)/);
     if (match) return match[1];
+
+    return null;
+}
+
+export async function resolveWebsimSiteId(w?: any): Promise<string | null> {
+    const syncId = getWebsimSiteId(w);
+    if (syncId) return syncId;
+
+    const websimObj = w || getWebsimObject();
+    if (websimObj && typeof websimObj.getCurrentProject === 'function') {
+        try {
+            const proj = await websimObj.getCurrentProject();
+            if (proj) {
+                if (proj.id) return String(proj.id);
+                if (proj.site_id) return String(proj.site_id);
+                if (proj.project_id) return String(proj.project_id);
+                if (proj.slug) return String(proj.slug);
+            }
+        } catch (e) { }
+    }
+
+    if (websimObj && typeof websimObj.getBootstrap === 'function') {
+        try {
+            const boot = await websimObj.getBootstrap();
+            if (boot) {
+                if (boot.siteId) return String(boot.siteId);
+                if (boot.site?.id) return String(boot.site.id);
+                if (boot.project?.id) return String(boot.project.id);
+            }
+        } catch (e) { }
+    }
+
     return null;
 }
 
@@ -92,165 +142,209 @@ export interface DbAttemptRecord {
 }
 
 /**
+ * Invokes an arbitrary candidate SQL function using tagged template, string, array, and object signatures.
+ */
+async function invokeSqlFunction(fn: Function, target: any, sql: string, isSelect: boolean): Promise<any> {
+    // 1. Tagged template literal call: fn`SELECT ...`
+    try {
+        const template = asTemplateStringsArray(sql);
+        const res = await fn.call(target, template);
+        if (res !== undefined || !isSelect) {
+            return res !== undefined ? res : { rows: [], success: true };
+        }
+    } catch (e1) {
+        // Continue to signature 2
+    }
+
+    // 2. Direct string call: fn(sql)
+    try {
+        const res = await fn.call(target, sql);
+        if (res !== undefined || !isSelect) {
+            return res !== undefined ? res : { rows: [], success: true };
+        }
+    } catch (e2) {
+        // Continue to signature 3
+    }
+
+    // 3. Array call: fn([sql])
+    try {
+        const res = await fn.call(target, [sql]);
+        if (res !== undefined || !isSelect) {
+            return res !== undefined ? res : { rows: [], success: true };
+        }
+    } catch (e3) {
+        // Continue to signature 4
+    }
+
+    // 4. Object call: fn({ sql, query: sql })
+    try {
+        const res = await fn.call(target, { sql, query: sql });
+        if (res !== undefined || !isSelect) {
+            return res !== undefined ? res : { rows: [], success: true };
+        }
+    } catch (e4) {
+        throw e4;
+    }
+
+    return undefined;
+}
+
+/**
  * Executes SQL on Websim's database system.
- * Tests all available interfaces:
- *  1. window.websim.sql (tagged template literal)
- *  2. window.websim.sql (direct string call)
- *  3. window.websim.sql (array call)
- *  4. window.websim.query
- *  5. window.websim.database.sql / query
- *  6. window.websim.db.sql / query
- *  7. HTTP POST to /api/v1/sites/{siteId}/sql
- *  8. HTTP POST to /api/v1/sql
- *  9. HTTP POST to /api/sql
- *
- * If all attempts fail, throws a comprehensive error with diagnostics.
+ * Discovers and tests all available interfaces:
+ *  1. window.websim.sql, query
+ *  2. window.websim.experimental (sql, database, query, sqlite, etc.)
+ *  3. window.websim.internal_only_experimental (sql, database, etc.)
+ *  4. window.websim.database.sql / query
+ *  5. window.websim.db.sql / query
+ *  6. HTTP POST to /api/v1/sites/{siteId}/sql, /api/v1/projects/{siteId}/sql, /api/v1/sql
+ *  7. Cross-origin HTTP POST with credentials to https://websim.com and https://websim.ai
  */
 export async function runWebsimSql(sql: string): Promise<any> {
     const cleanSql = sql.trim();
     const isSelect = /^SELECT/i.test(cleanSql);
-    const isCreate = /^CREATE/i.test(cleanSql);
     const w = getWebsimObject();
     const attempts: DbAttemptRecord[] = [];
 
-    // --- 1. Direct window.websim method attempts ---
+    // Resolve site ID (including subdomain check & async project fetch)
+    const siteId = await resolveWebsimSiteId(w);
+
+    // Deep inspection of the websim object for diagnostics
+    let projectDump: any = null;
+    let bootstrapDump: any = null;
+    let experimentalKeys: string[] = [];
+    let internalExperimentalKeys: string[] = [];
+
     if (w) {
-        // Tagged template invocation: websim.sql`...`
-        if (typeof w.sql === 'function') {
-            try {
-                const template = asTemplateStringsArray(cleanSql);
-                const res = await w.sql(template);
-                // For non-SELECT (like CREATE TABLE or INSERT), void/null/undefined is successful execution
-                if (res !== undefined || !isSelect) {
-                    return res !== undefined ? res : { rows: [], success: true };
-                }
-                attempts.push({ method: 'window.websim.sql (tagged template)', status: 'failed', details: 'Returned undefined for SELECT' });
-            } catch (e: any) {
-                attempts.push({ method: 'window.websim.sql (tagged template)', status: 'failed', error: e?.message || String(e) });
-            }
-
-            // Direct string invocation: websim.sql(sql)
-            try {
-                const res = await w.sql(cleanSql);
-                if (res !== undefined || !isSelect) {
-                    return res !== undefined ? res : { rows: [], success: true };
-                }
-                attempts.push({ method: 'window.websim.sql (string parameter)', status: 'failed', details: 'Returned undefined for SELECT' });
-            } catch (e: any) {
-                attempts.push({ method: 'window.websim.sql (string parameter)', status: 'failed', error: e?.message || String(e) });
-            }
-
-            // Array invocation: websim.sql([sql])
-            try {
-                const res = await w.sql([cleanSql]);
-                if (res !== undefined || !isSelect) {
-                    return res !== undefined ? res : { rows: [], success: true };
-                }
-                attempts.push({ method: 'window.websim.sql (array parameter)', status: 'failed', details: 'Returned undefined for SELECT' });
-            } catch (e: any) {
-                attempts.push({ method: 'window.websim.sql (array parameter)', status: 'failed', error: e?.message || String(e) });
-            }
-        } else {
-            attempts.push({ method: 'window.websim.sql', status: 'skipped', details: 'Not a function on window.websim' });
+        if (w.experimental && typeof w.experimental === 'object') {
+            try { experimentalKeys = Object.keys(w.experimental); } catch (e) { }
         }
-
-        // websim.query
-        if (typeof w.query === 'function') {
+        if (w.internal_only_experimental && typeof w.internal_only_experimental === 'object') {
+            try { internalExperimentalKeys = Object.keys(w.internal_only_experimental); } catch (e) { }
+        }
+        if (typeof w.getCurrentProject === 'function') {
             try {
-                const res = await w.query(cleanSql);
-                if (res !== undefined || !isSelect) {
-                    return res !== undefined ? res : { rows: [], success: true };
-                }
-                attempts.push({ method: 'window.websim.query (string parameter)', status: 'failed', details: 'Returned undefined for SELECT' });
+                const p = await w.getCurrentProject();
+                projectDump = p ? { id: p.id, title: p.title, slug: p.slug } : null;
             } catch (e: any) {
-                attempts.push({ method: 'window.websim.query (string parameter)', status: 'failed', error: e?.message || String(e) });
+                projectDump = { error: e?.message || String(e) };
             }
-
+        }
+        if (typeof w.getBootstrap === 'function') {
             try {
-                const template = asTemplateStringsArray(cleanSql);
-                const res = await w.query(template);
-                if (res !== undefined || !isSelect) {
-                    return res !== undefined ? res : { rows: [], success: true };
-                }
-                attempts.push({ method: 'window.websim.query (tagged template)', status: 'failed', details: 'Returned undefined for SELECT' });
+                const b = await w.getBootstrap();
+                bootstrapDump = b ? { siteId: b.siteId, site: b.site?.id, project: b.project?.id } : null;
             } catch (e: any) {
-                attempts.push({ method: 'window.websim.query (tagged template)', status: 'failed', error: e?.message || String(e) });
+                bootstrapDump = { error: e?.message || String(e) };
+            }
+        }
+    }
+
+    // --- 1. Identify all candidate SQL functions on window.websim ---
+    const functionCandidates: { name: string; target: any; fn: any }[] = [];
+
+    if (w) {
+        // Direct functions on w
+        if (typeof w.sql === 'function') functionCandidates.push({ name: 'websim.sql', target: w, fn: w.sql });
+        if (typeof w.query === 'function') functionCandidates.push({ name: 'websim.query', target: w, fn: w.query });
+
+        // w.experimental
+        if (w.experimental) {
+            const exp = w.experimental;
+            if (typeof exp.sql === 'function') functionCandidates.push({ name: 'websim.experimental.sql', target: exp, fn: exp.sql });
+            if (typeof exp.query === 'function') functionCandidates.push({ name: 'websim.experimental.query', target: exp, fn: exp.query });
+            if (typeof exp.sqlite === 'function') functionCandidates.push({ name: 'websim.experimental.sqlite', target: exp, fn: exp.sqlite });
+            if (exp.database) {
+                if (typeof exp.database.sql === 'function') functionCandidates.push({ name: 'websim.experimental.database.sql', target: exp.database, fn: exp.database.sql });
+                if (typeof exp.database.query === 'function') functionCandidates.push({ name: 'websim.experimental.database.query', target: exp.database, fn: exp.database.query });
+            }
+            if (exp.db) {
+                if (typeof exp.db.sql === 'function') functionCandidates.push({ name: 'websim.experimental.db.sql', target: exp.db, fn: exp.db.sql });
+                if (typeof exp.db.query === 'function') functionCandidates.push({ name: 'websim.experimental.db.query', target: exp.db, fn: exp.db.query });
             }
         }
 
-        // websim.database object
+        // w.internal_only_experimental
+        if (w.internal_only_experimental) {
+            const intExp = w.internal_only_experimental;
+            if (typeof intExp.sql === 'function') functionCandidates.push({ name: 'websim.internal_only_experimental.sql', target: intExp, fn: intExp.sql });
+            if (typeof intExp.query === 'function') functionCandidates.push({ name: 'websim.internal_only_experimental.query', target: intExp, fn: intExp.query });
+            if (intExp.database) {
+                if (typeof intExp.database.sql === 'function') functionCandidates.push({ name: 'websim.internal_only_experimental.database.sql', target: intExp.database, fn: intExp.database.sql });
+                if (typeof intExp.database.query === 'function') functionCandidates.push({ name: 'websim.internal_only_experimental.database.query', target: intExp.database, fn: intExp.database.query });
+            }
+        }
+
+        // w.database / w.db
         if (w.database) {
-            const dbObj = w.database;
-            if (typeof dbObj.sql === 'function') {
-                try {
-                    const res = await dbObj.sql(asTemplateStringsArray(cleanSql));
-                    if (res !== undefined || !isSelect) return res !== undefined ? res : { rows: [], success: true };
-                } catch (e: any) {
-                    attempts.push({ method: 'window.websim.database.sql', status: 'failed', error: e?.message || String(e) });
-                }
-            }
-            if (typeof dbObj.query === 'function') {
-                try {
-                    const res = await dbObj.query(cleanSql);
-                    if (res !== undefined || !isSelect) return res !== undefined ? res : { rows: [], success: true };
-                } catch (e: any) {
-                    attempts.push({ method: 'window.websim.database.query', status: 'failed', error: e?.message || String(e) });
-                }
-            }
+            if (typeof w.database.sql === 'function') functionCandidates.push({ name: 'websim.database.sql', target: w.database, fn: w.database.sql });
+            if (typeof w.database.query === 'function') functionCandidates.push({ name: 'websim.database.query', target: w.database, fn: w.database.query });
         }
-
-        // websim.db object
         if (w.db) {
-            const dbObj = w.db;
-            if (typeof dbObj.sql === 'function') {
-                try {
-                    const res = await dbObj.sql(asTemplateStringsArray(cleanSql));
-                    if (res !== undefined || !isSelect) return res !== undefined ? res : { rows: [], success: true };
-                } catch (e: any) {
-                    attempts.push({ method: 'window.websim.db.sql', status: 'failed', error: e?.message || String(e) });
-                }
-            }
-            if (typeof dbObj.query === 'function') {
-                try {
-                    const res = await dbObj.query(cleanSql);
-                    if (res !== undefined || !isSelect) return res !== undefined ? res : { rows: [], success: true };
-                } catch (e: any) {
-                    attempts.push({ method: 'window.websim.db.query', status: 'failed', error: e?.message || String(e) });
-                }
-            }
+            if (typeof w.db.sql === 'function') functionCandidates.push({ name: 'websim.db.sql', target: w.db, fn: w.db.sql });
+            if (typeof w.db.query === 'function') functionCandidates.push({ name: 'websim.db.query', target: w.db, fn: w.db.query });
         }
-    } else {
-        attempts.push({ method: 'window.websim object', status: 'skipped', details: 'window.websim not found on window or parent' });
+    }
+
+    // Try candidate functions
+    for (const cand of functionCandidates) {
+        try {
+            const res = await invokeSqlFunction(cand.fn, cand.target, cleanSql, isSelect);
+            if (res !== undefined) {
+                return res;
+            }
+            attempts.push({ method: cand.name, status: 'failed', details: 'Returned undefined for SELECT' });
+        } catch (e: any) {
+            attempts.push({ method: cand.name, status: 'failed', error: e?.message || String(e) });
+        }
     }
 
     // --- 2. HTTP Endpoint attempts ---
     const headers = { 'Content-Type': 'application/json' };
     const body = JSON.stringify({ sql: cleanSql, query: cleanSql });
-    const siteId = getWebsimSiteId();
 
     const endpoints: string[] = [];
     if (siteId) {
         endpoints.push(`/api/v1/sites/${siteId}/sql`);
+        endpoints.push(`/api/v1/projects/${siteId}/sql`);
+        endpoints.push(`https://websim.com/api/v1/sites/${siteId}/sql`);
+        endpoints.push(`https://websim.ai/api/v1/sites/${siteId}/sql`);
     }
     endpoints.push('/api/v1/sql');
     endpoints.push('/api/sql');
+    endpoints.push('https://websim.com/api/v1/sql');
+    endpoints.push('https://websim.ai/api/v1/sql');
 
     for (const ep of endpoints) {
         try {
-            const res = await fetch(ep, { method: 'POST', headers, body });
+            const res = await fetch(ep, {
+                method: 'POST',
+                headers,
+                body,
+                credentials: 'include'
+            });
+
             if (res.ok) {
                 const json = await res.json();
                 return json;
             } else {
                 const text = await res.text().catch(() => '');
-                attempts.push({ method: `HTTP POST ${ep}`, status: 'failed', error: `HTTP ${res.status}: ${text.slice(0, 100)}` });
+                attempts.push({
+                    method: `POST ${ep}`,
+                    status: 'failed',
+                    error: `HTTP ${res.status}: ${text.slice(0, 120)}`
+                });
             }
         } catch (e: any) {
-            attempts.push({ method: `HTTP POST ${ep}`, status: 'failed', error: e?.message || String(e) });
+            attempts.push({
+                method: `POST ${ep}`,
+                status: 'failed',
+                error: e?.message || String(e)
+            });
         }
     }
 
-    // --- 3. If all attempts failed, throw a detailed diagnostic error ---
+    // --- 3. Build diagnostic failure summary ---
     const websimKeys = w ? Object.keys(w) : [];
     const diagnosticInfo = {
         timestamp: new Date().toISOString(),
@@ -259,13 +353,17 @@ export async function runWebsimSql(sql: string): Promise<any> {
         siteId,
         hasWebsimObject: !!w,
         websimKeys,
+        experimentalKeys,
+        internalExperimentalKeys,
+        currentProject: projectDump,
+        bootstrap: bootstrapDump,
         sqlQuery: cleanSql.slice(0, 120),
         attempts
     };
 
     const errMessage = w && websimKeys.length > 0
-        ? `Websim database query failed. Database API methods on window.websim were tried but could not execute. (Available window.websim keys: [${websimKeys.join(', ')}])`
-        : `Websim database not reachable. No active Websim database API or endpoint could be found on host ${typeof window !== 'undefined' ? window.location.hostname : ''}.`;
+        ? `Websim database query failed. Explored ${functionCandidates.length} SDK functions and ${endpoints.length} HTTP endpoints on host "${typeof window !== 'undefined' ? window.location.hostname : ''}".`
+        : `Websim database not reachable. No active Websim database API or endpoint could be reached.`;
 
     const fullError: any = new Error(errMessage);
     fullError.diagnostics = JSON.stringify(diagnosticInfo, null, 2);
