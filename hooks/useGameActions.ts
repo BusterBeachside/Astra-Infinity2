@@ -475,17 +475,18 @@ export const useGameActions = ({
                     proofToken: replayPayload ? scoreVerifier.generateProofToken(replayPayload) : undefined
                 };
 
-                supabaseService.submitScore(gs.elapsedTime, mode, metadata, replayPayload).catch((err: any) => {
-                    console.warn('[AstraNet] Background score sync failed:', err);
-                });
-
                 const isHigh = isEligible && Storage.checkIsHighScore(gs.elapsedTime, mode);
                 
                 if (isHigh) {
+                    // Score will be submitted once the player enters initials in handleSubmitHighScore
                     const lastInitials = localStorage.getItem('stellar_last_initials') || '';
                     setHsInitials(lastInitials);
                     setView('highscore_entry');
                 } else {
+                    // For non-highscore runs, submit immediately in the background
+                    supabaseService.submitScore(gs.elapsedTime, mode, metadata, replayPayload).catch((err: any) => {
+                        console.warn('[AstraNet] Background score sync failed:', err);
+                    });
                     setView('gameover');
                 }
             } else {

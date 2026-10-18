@@ -96,6 +96,11 @@ const OnlineLeaderboard: React.FC<OnlineLeaderboardProps> = ({ initialMode, onMo
         }
     };
 
+    const displayedEntries = entries.filter(e => {
+        const itemMode = (e.metadata?.mode || (e as any).mode || (e as any).gameMode || 'normal').toLowerCase().trim();
+        return itemMode === mode.toLowerCase().trim();
+    });
+
     return (
         <div 
             className="absolute inset-0 z-[150] flex flex-col items-center justify-center bg-black/95 backdrop-blur-md p-6"
@@ -218,13 +223,13 @@ const OnlineLeaderboard: React.FC<OnlineLeaderboardProps> = ({ initialMode, onMo
                                 RETRY DATABASE QUERY
                             </button>
                         </motion.div>
-                    ) : entries.length === 0 ? (
+                    ) : displayedEntries.length === 0 ? (
                         <motion.div 
                             key="empty"
                             initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
                             className="flex flex-col items-center justify-center py-20 text-gray-600 font-mono italic"
                         >
-                            NO RECORDS FOUND FOR THIS SECTOR IN THE WEBSIM DATABASE.
+                            NO RECORDS FOUND FOR THIS SECTOR IN THE DATABASE.
                         </motion.div>
                     ) : (
                         <motion.div 
@@ -232,7 +237,7 @@ const OnlineLeaderboard: React.FC<OnlineLeaderboardProps> = ({ initialMode, onMo
                             initial={{ opacity: 0 }} animate={{ opacity: 1 }}
                             className="space-y-1"
                         >
-                            {entries.map((entry, idx) => (
+                            {displayedEntries.map((entry, idx) => (
                                 <motion.div 
                                     key={entry.id}
                                     initial={{ opacity: 0, x: -10 }}

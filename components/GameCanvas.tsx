@@ -230,6 +230,8 @@ const GameCanvas: React.FC = () => {
       addFloatingText
   });
 
+  const isSubmittingScoreRef = useRef(false);
+
   const startReplay = (replay: ReplayData) => {
       setReturnView(viewRef.current);
       engineStartReplay(replay);
@@ -440,13 +442,15 @@ const GameCanvas: React.FC = () => {
   };
 
   const submitHighScore = async () => {
+      if (isSubmittingScoreRef.current) return;
       const gs = gameStateRef.current;
       if (!hsInitials || hsInitials.length !== 3) {
           audioManager.playSfx('error');
           return;
       }
       
-      const mode = gs.gameMode as 'normal' | 'hardcore';
+      isSubmittingScoreRef.current = true;
+      const mode = gs.gameMode as 'normal' | 'hardcore' | 'chaos';
       
       const replay: ReplayData | null = replayRecordingRef.current ? {
           id: lastRecordedReplayIdRef.current || `run_${Date.now()}`,
@@ -494,14 +498,16 @@ const GameCanvas: React.FC = () => {
               replayId: replay?.id,
               metadata
           }, mode, replay);
+          localStorage.setItem('stellar_last_initials', hsInitials.toUpperCase());
+          audioManager.playSfx('ui_click');
+          setView('gameover');
+      } catch (e) {
+          console.error("High score submission error:", e);
+          setView('gameover');
       } finally {
           setUiState(prev => ({ ...prev, loadingMessage: '' }));
+          isSubmittingScoreRef.current = false;
       }
-      
-      localStorage.setItem('stellar_last_initials', hsInitials.toUpperCase());
-      
-      audioManager.playSfx('ui_click');
-      setView('gameover');
   };
 
   const initGameSequence = (mode: GameMode) => {

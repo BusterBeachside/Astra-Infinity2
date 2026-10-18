@@ -183,7 +183,7 @@ function findDatabaseFunctions(w: any): { name: string; target: any; fn: Functio
         visited.add(obj);
 
         if (typeof obj === 'function') {
-            if (/sql|query|db|database|sqlite|exec|v0/i.test(path)) {
+            if (/sql|query|sqlite|exec/i.test(path) && !/getUser|getCreator|getBootstrap|getColorScheme|getComments|addEventListener/i.test(path)) {
                 found.push({ name: path, target: null, fn: obj });
             }
         }
@@ -199,8 +199,7 @@ function findDatabaseFunctions(w: any): { name: string; target: any; fn: Functio
                 const val = obj[prop];
                 const childPath = `${path}.${prop}`;
                 if (typeof val === 'function') {
-                    if (/sql|query|db|database|sqlite|exec|collection|store|table|run|all|get/i.test(prop) ||
-                        /v0|experimental/i.test(path)) {
+                    if (/sql|query|sqlite|exec/i.test(prop) && !/getUser|getCreator|getBootstrap|getColorScheme|getComments|addEventListener/i.test(prop)) {
                         found.push({ name: childPath, target: obj, fn: val });
                     }
                 } else if (val && typeof val === 'object') {
@@ -218,15 +217,27 @@ function findDatabaseFunctions(w: any): { name: string; target: any; fn: Functio
 
     if (typeof window !== 'undefined') {
         const win = window as any;
-        if (win.WebsimSocket) inspect(win.WebsimSocket, 'window.WebsimSocket');
-        if (win.room) inspect(win.room, 'window.room');
-        if (win.Room) inspect(win.Room, 'window.Room');
         if (win.db) inspect(win.db, 'window.db');
         if (win.database) inspect(win.database, 'window.database');
         if (win.sqlite) inspect(win.sqlite, 'window.sqlite');
     }
 
     return found;
+}
+
+/**
+ * Validates that an SQL execution result actually looks like a query response.
+ */
+function isValidSqlResult(res: any, isSelect: boolean): boolean {
+    if (res === undefined) return false;
+    if (!isSelect) return true;
+    if (Array.isArray(res)) return true;
+    if (res && typeof res === 'object') {
+        if (Array.isArray(res.rows) || Array.isArray(res.data) || Array.isArray(res.results) || Array.isArray(res.result) || Array.isArray(res.records)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /**
@@ -237,33 +248,25 @@ async function invokeSqlFunction(fn: Function, target: any, sql: string, isSelec
     try {
         const template = asTemplateStringsArray(sql);
         const res = await fn.call(target, template);
-        if (res !== undefined || !isSelect) {
-            return res !== undefined ? res : { rows: [], success: true };
-        }
+        if (isValidSqlResult(res, isSelect)) return res;
     } catch (e1) { }
 
     // 2. Direct string call: fn(sql)
     try {
         const res = await fn.call(target, sql);
-        if (res !== undefined || !isSelect) {
-            return res !== undefined ? res : { rows: [], success: true };
-        }
+        if (isValidSqlResult(res, isSelect)) return res;
     } catch (e2) { }
 
     // 3. Array call: fn([sql])
     try {
         const res = await fn.call(target, [sql]);
-        if (res !== undefined || !isSelect) {
-            return res !== undefined ? res : { rows: [], success: true };
-        }
+        if (isValidSqlResult(res, isSelect)) return res;
     } catch (e3) { }
 
     // 4. Object call: fn({ query: sql }) or fn({ sql })
     try {
         const res = await fn.call(target, { query: sql, sql });
-        if (res !== undefined || !isSelect) {
-            return res !== undefined ? res : { rows: [], success: true };
-        }
+        if (isValidSqlResult(res, isSelect)) return res;
     } catch (e4) { }
 
     return undefined;
@@ -326,28 +329,30 @@ export async function runWebsimSql(sql: string): Promise<any> {
     }
 
     // --- 1. Test room.collection or WebsimSocket if available ---
-    if (typeof window !== 'undefined') {
-        const win = window as any;
-        const roomObj = win.room || (win.WebsimSocket ? new win.WebsimSocket() : null) || (w && w.room ? w.room : null);
-        if (roomObj && typeof roomObj.collection === 'function') {
-            try {
-                const col = roomObj.collection('websim_scores');
-                if (isSelect) {
-                    if (typeof col.getList === 'function') {
-                        const items = await col.getList();
-                        if (Array.isArray(items)) {
-                            return items;
-                        }
-                    } else if (typeof col.all === 'function') {
-                        const items = await col.all();
-                        if (Array.isArray(items)) {
-                            return items;
-                        }
-                    }
+    const roomObj = getWebsimRoom();
+    if (roomObj && typeof roomObj.collection === 'function') {
+        try {
+            const col = roomObj.collection('websim_scores');
+            if (isSelect) {
+                const modeMatch = cleanSql.match(/mode\s*=\s*'([^']+)'/i);
+                const targetMode = modeMatch ? modeMatch[1].toLowerCase().trim() : null;
+
+                let rawItems: any = null;
+                if (typeof col.getList === 'function') {
+                    rawItems = await col.getList();
+                } else if (typeof col.all === 'function') {
+                    rawItems = await col.all();
                 }
-            } catch (e: any) {
-                attempts.push({ method: 'room.collection', status: 'failed', error: e?.message || String(e) });
+
+                const items = Array.isArray(rawItems) ? rawItems : (rawItems?.items || []);
+                if (Array.isArray(items)) {
+                    return targetMode 
+                        ? items.filter((item: any) => extractItemMode(item) === targetMode)
+                        : items;
+                }
             }
+        } catch (e: any) {
+            attempts.push({ method: 'room.collection', status: 'failed', error: e?.message || String(e) });
         }
     }
 
@@ -597,6 +602,97 @@ function safeJsonParse(str: string): any {
     }
 }
 
+export function getWebsimRoom(): any {
+    if (typeof window === 'undefined') return null;
+    const win = window as any;
+    if (win.room && typeof win.room.collection === 'function') return win.room;
+    if (win.WebsimSocket) {
+        try {
+            if (!win.__cachedWebsimSocket) {
+                win.__cachedWebsimSocket = new win.WebsimSocket();
+            }
+            return win.__cachedWebsimSocket;
+        } catch (e) {
+            console.warn("[Websim] Error initializing WebsimSocket:", e);
+        }
+    }
+    const w = getWebsimObject();
+    if (w && w.room && typeof w.room.collection === 'function') return w.room;
+    return null;
+}
+
+export function extractItemMode(item: any): string {
+    if (!item) return 'normal';
+    if (typeof item.mode === 'string' && item.mode.trim() !== '') {
+        return item.mode.toLowerCase().trim();
+    }
+    if (typeof item.gameMode === 'string' && item.gameMode.trim() !== '') {
+        return item.gameMode.toLowerCase().trim();
+    }
+    if (typeof item.game_mode === 'string' && item.game_mode.trim() !== '') {
+        return item.game_mode.toLowerCase().trim();
+    }
+    if (item.data && typeof item.data === 'object') {
+        if (typeof item.data.mode === 'string' && item.data.mode.trim() !== '') {
+            return item.data.mode.toLowerCase().trim();
+        }
+        if (typeof item.data.gameMode === 'string' && item.data.gameMode.trim() !== '') {
+            return item.data.gameMode.toLowerCase().trim();
+        }
+    }
+    if (item.metadata) {
+        try {
+            const meta = typeof item.metadata === 'string' ? JSON.parse(item.metadata) : item.metadata;
+            if (meta && typeof meta.mode === 'string' && meta.mode.trim() !== '') {
+                return meta.mode.toLowerCase().trim();
+            }
+        } catch (e) {}
+    }
+    if (typeof item.id === 'string') {
+        const idLower = item.id.toLowerCase();
+        if (idLower.endsWith('_hardcore') || idLower.includes('_hardcore_')) return 'hardcore';
+        if (idLower.endsWith('_chaos') || idLower.includes('_chaos_')) return 'chaos';
+        if (idLower.endsWith('_normal') || idLower.includes('_normal_')) return 'normal';
+    }
+    return 'normal';
+}
+
+function deduplicateAndSortLeaderboard(entries: LeaderboardEntry[]): LeaderboardEntry[] {
+    const playerBestMap = new Map<string, LeaderboardEntry>();
+    for (const entry of entries) {
+        const playerKey = (entry.user_id && entry.user_id.trim() !== '')
+            ? entry.user_id.trim().toLowerCase()
+            : (entry.username || 'PILOT').trim().toLowerCase();
+
+        const existing = playerBestMap.get(playerKey);
+        if (!existing || entry.score > existing.score) {
+            playerBestMap.set(playerKey, entry);
+        }
+    }
+
+    const uniqueEntries = Array.from(playerBestMap.values());
+    uniqueEntries.sort((a, b) => b.score - a.score);
+    return uniqueEntries.slice(0, 50);
+}
+
+const mapRawEntryToLeaderboard = (row: any): LeaderboardEntry => {
+    const parsedMeta = row.metadata 
+        ? (typeof row.metadata === 'string' ? safeJsonParse(row.metadata) : row.metadata) 
+        : null;
+    return {
+        id: String(row.id || ('entry_' + Math.random().toString(36).substring(2, 9))),
+        user_id: String(row.user_id || ''),
+        username: String(row.username || 'PILOT'),
+        avatar_url: String(row.avatar_url || ''),
+        name: String(row.username || 'PILOT'),
+        score: Number(row.score) || 0,
+        date: String(row.created_at || new Date().toISOString()),
+        metadata: parsedMeta,
+        replay_path: (row.replay_data && row.replay_data !== 'yes' && String(row.replay_data).length > 5) ? String(row.id) : null,
+        created_at: String(row.created_at || new Date().toISOString())
+    };
+};
+
 export const websimService = {
     async getCurrentUser() {
         const user = await getWebsimUser();
@@ -673,53 +769,77 @@ export const websimService = {
     },
 
     /**
-     * Reads scores exclusively from the Websim database.
+     * Reads scores exclusively from the Websim database for the requested sector/mode.
      * Strictly does NOT fall back to local scores!
      */
     async getLeaderboard(mode: string): Promise<LeaderboardEntry[]> {
-        await ensureDb();
+        const normalizedMode = String(mode || 'normal').toLowerCase().trim();
 
-        const query = `SELECT id, user_id, username, avatar_url, score, mode, metadata, replay_data, created_at FROM websim_scores WHERE mode = '${mode}' ORDER BY score DESC LIMIT 100;`;
-        
-        // This will throw if the Websim database is unavailable/failing
-        const res = await runWebsimSql(query);
-        const rows = extractRows(res);
+        // 1. Try Websim Room Collection first (the primary Websim multiplayer database)
+        const room = getWebsimRoom();
+        if (room && typeof room.collection === 'function') {
+            try {
+                const col = room.collection('websim_scores');
+                if (typeof col.getList === 'function') {
+                    const rawList = await col.getList();
+                    const items = Array.isArray(rawList) ? rawList : (rawList?.items || []);
+                    
+                    if (Array.isArray(items)) {
+                        // STRICT mode filter: strictly ensure entries only match the requested mode
+                        const matchingItems = items.filter((item: any) => {
+                            const itemMode = extractItemMode(item);
+                            return itemMode === normalizedMode;
+                        });
 
-        const mapEntry = (row: any): LeaderboardEntry => ({
-            id: String(row.id || ('entry_' + Math.random().toString(36).substring(2, 9))),
-            user_id: String(row.user_id || ''),
-            username: String(row.username || 'PILOT'),
-            avatar_url: String(row.avatar_url || ''),
-            name: String(row.username || 'PILOT'),
-            score: Number(row.score) || 0,
-            date: String(row.created_at || new Date().toISOString()),
-            metadata: row.metadata ? (typeof row.metadata === 'string' ? safeJsonParse(row.metadata) : row.metadata) : null,
-            replay_path: (row.replay_data && row.replay_data !== 'yes' && String(row.replay_data).length > 5) ? String(row.id) : null,
-            created_at: String(row.created_at || new Date().toISOString())
-        });
-
-        const allEntries: LeaderboardEntry[] = rows.map(mapEntry);
-
-        // Deduplicate: Display strictly only ONE best score per player
-        const playerBestMap = new Map<string, LeaderboardEntry>();
-        for (const entry of allEntries) {
-            const playerKey = (entry.user_id && entry.user_id.trim() !== '')
-                ? entry.user_id
-                : (entry.username || 'PILOT').trim().toLowerCase();
-
-            const existing = playerBestMap.get(playerKey);
-            if (!existing || entry.score > existing.score) {
-                playerBestMap.set(playerKey, entry);
+                        const entries = matchingItems.map(mapRawEntryToLeaderboard);
+                        return deduplicateAndSortLeaderboard(entries);
+                    }
+                }
+            } catch (colErr: any) {
+                console.warn("[Websim Database] room.collection getList error:", colErr?.message);
             }
         }
 
-        const uniqueEntries = Array.from(playerBestMap.values());
-        uniqueEntries.sort((a, b) => b.score - a.score);
+        // 2. Fallback to Websim SQL interface
+        await ensureDb();
+        const query = `SELECT id, user_id, username, avatar_url, score, mode, metadata, replay_data, created_at FROM websim_scores WHERE mode = '${normalizedMode}' ORDER BY score DESC LIMIT 100;`;
+        
+        const res = await runWebsimSql(query);
+        const rows = extractRows(res);
 
-        return uniqueEntries.slice(0, 50);
+        // Strict mode filter: strictly ensure entries only match the requested mode
+        const matchingRows = rows.filter((r: any) => {
+            const rowMode = extractItemMode(r);
+            return rowMode === normalizedMode;
+        });
+
+        const allEntries: LeaderboardEntry[] = matchingRows.map(mapRawEntryToLeaderboard);
+        return deduplicateAndSortLeaderboard(allEntries);
     },
 
     async downloadReplay(id: string): Promise<ReplayData | null> {
+        // 1. Try Room Collection
+        const room = getWebsimRoom();
+        if (room && typeof room.collection === 'function') {
+            try {
+                const col = room.collection('websim_scores');
+                if (typeof col.getList === 'function') {
+                    const rawList = await col.getList();
+                    const items = Array.isArray(rawList) ? rawList : (rawList?.items || []);
+                    const found = items.find((item: any) => String(item.id) === String(id));
+                    if (found && found.replay_data && found.replay_data !== 'yes' && found.replay_data !== '') {
+                        try {
+                            const parsed = typeof found.replay_data === 'string' ? JSON.parse(found.replay_data) : found.replay_data;
+                            return decompressReplay(parsed);
+                        } catch (e) {
+                            console.error("[Websim] Error parsing replay from room.collection:", e);
+                        }
+                    }
+                }
+            } catch (e) {}
+        }
+
+        // 2. Try SQL database
         try {
             await ensureDb();
             const res = await runWebsimSql(`SELECT replay_data FROM websim_scores WHERE id = '${id}';`);
@@ -739,8 +859,9 @@ export const websimService = {
             console.warn("[Websim] Replay download from DB failed:", e);
         }
 
+        // 3. Fallback to local storage backup
         const localScores = getLocalScores();
-        const found = localScores.find(s => s.id === id);
+        const found = localScores.find(s => String(s.id) === String(id));
         if (found && found.replay_data) {
             try {
                 const parsed = typeof found.replay_data === 'string' ? JSON.parse(found.replay_data) : found.replay_data;
@@ -754,9 +875,11 @@ export const websimService = {
     },
 
     /**
-     * Submits a high score to the Websim database without anti-cheat restrictions.
+     * Submits a high score to the Websim database with deterministic deduplication per player and mode.
+     * Prevents duplicate entries from being created in the database and cleans up any legacy duplicates.
      */
     async submitScore(score: number, mode: string, metadata: any, replay: ReplayData | null) {
+        const normalizedMode = String(mode || 'normal').toLowerCase().trim();
         let user = await getWebsimUser();
         if (!user) user = getFallbackWebsimUser();
 
@@ -774,8 +897,14 @@ export const websimService = {
             }
         }
 
-        const targetId = 'score_' + Math.random().toString(36).substring(2, 11);
-        const metaSqlStr = JSON.stringify(metadata || {}).replace(/\\/g, '\\\\').replace(/'/g, "''");
+        // Deterministic ID ensures strictly one score record per user per mode
+        const safeUserId = String(user.id || safeUsername).replace(/[^a-zA-Z0-9_-]/g, '_');
+        const targetId = `score_${safeUserId}_${normalizedMode}`;
+        const metaObj = {
+            ...(metadata || {}),
+            mode: normalizedMode
+        };
+        const metaSqlStr = JSON.stringify(metaObj).replace(/\\/g, '\\\\').replace(/'/g, "''");
 
         // Keep local copy as player emergency backup
         saveLocalScore({
@@ -784,51 +913,118 @@ export const websimService = {
             username: user.username,
             avatar_url: user.avatar_url || '',
             score,
-            mode,
-            metadata: metadata || {},
+            mode: normalizedMode,
+            metadata: metaObj,
             replay_data: replayStr,
             created_at: createdAt
         });
 
-        // Also try room.collection if available
-        if (typeof window !== 'undefined') {
-            const win = window as any;
-            const roomObj = win.room || (win.WebsimSocket ? new win.WebsimSocket() : null);
-            if (roomObj && typeof roomObj.collection === 'function') {
-                try {
-                    const col = roomObj.collection('websim_scores');
-                    if (typeof col.create === 'function') {
-                        await col.create({
-                            id: targetId,
-                            user_id: user.id,
-                            username: safeUsername,
-                            avatar_url: safeAvatar,
-                            score,
-                            mode,
-                            metadata: metaSqlStr,
-                            replay_data: replayStr,
-                            created_at: createdAt
-                        });
-                        console.log("[Websim Database] Stored score via room.collection");
+        // --- 1. Primary storage path: Websim Room Collection ---
+        const room = getWebsimRoom();
+        if (room && typeof room.collection === 'function') {
+            try {
+                const col = room.collection('websim_scores');
+                
+                // Fetch all existing scores to check and eliminate any duplicate records
+                let existingList: any[] = [];
+                if (typeof col.getList === 'function') {
+                    const res = await col.getList();
+                    existingList = Array.isArray(res) ? res : (res?.items || []);
+                }
+
+                const playerKey = (user.id && user.id.trim() !== '') ? user.id.trim().toLowerCase() : safeUsername.toLowerCase();
+                
+                // Find all existing records for this player in this mode
+                const matchingPlayerRecords = existingList.filter((item: any) => {
+                    const itemMode = extractItemMode(item);
+                    if (itemMode !== normalizedMode) return false;
+                    const itemKey = (item.user_id && String(item.user_id).trim() !== '') 
+                        ? String(item.user_id).trim().toLowerCase() 
+                        : String(item.username || '').toLowerCase().trim();
+                    return itemKey === playerKey;
+                });
+
+                // Check if existing record is already higher or equal
+                const bestExisting = matchingPlayerRecords.reduce((best: any, curr: any) => {
+                    return (!best || (Number(curr.score) || 0) > (Number(best.score) || 0)) ? curr : best;
+                }, null);
+
+                if (bestExisting && (Number(bestExisting.score) || 0) >= score) {
+                    console.log(`[Websim Database] Player already has a higher or equal record (${bestExisting.score}s >= ${score}s) in ${normalizedMode}. Preserving best.`);
+                    // Prune any legacy duplicates in the collection for this user and mode
+                    for (const dup of matchingPlayerRecords) {
+                        if (dup.id !== bestExisting.id && typeof col.delete === 'function') {
+                            try { await col.delete(dup.id); } catch (e) {}
+                        }
                     }
-                } catch (e) { }
+                    return { success: true };
+                }
+
+                // Delete ALL old records for this player in this mode before creating the new record
+                for (const oldRec of matchingPlayerRecords) {
+                    if (typeof col.delete === 'function' && oldRec.id) {
+                        try { await col.delete(oldRec.id); } catch (e) {}
+                    }
+                }
+
+                // Create the SINGLE definitive record for this player and mode
+                const newRecord = {
+                    id: targetId,
+                    user_id: user.id,
+                    username: safeUsername,
+                    avatar_url: safeAvatar,
+                    score: Number(score),
+                    mode: normalizedMode,
+                    gameMode: normalizedMode,
+                    metadata: metaSqlStr,
+                    replay_data: replayStr,
+                    created_at: createdAt
+                };
+
+                if (typeof col.create === 'function') {
+                    await col.create(newRecord);
+                    console.log(`[Websim Database] Single high score stored in room.collection for ${safeUsername} (${normalizedMode}: ${score}s)`);
+                    return { success: true };
+                }
+            } catch (colErr: any) {
+                console.warn("[Websim Database] room.collection save attempt failed, falling back to SQL:", colErr?.message);
             }
         }
 
+        // --- 2. Fallback storage path: SQL Database ---
         await ensureDb();
 
-        const insertSql = `INSERT INTO websim_scores (id, user_id, username, avatar_url, score, mode, metadata, replay_data, created_at) VALUES ('${targetId}', '${user.id}', '${safeUsername}', '${safeAvatar}', ${score}, '${mode}', '${metaSqlStr}', '${replayStr}', '${createdAt}');`;
+        // Check if player has higher record in SQL
+        try {
+            const checkSql = `SELECT id, score FROM websim_scores WHERE (user_id = '${user.id}' OR username = '${safeUsername}') AND mode = '${normalizedMode}' ORDER BY score DESC LIMIT 1;`;
+            const existingRes = await runWebsimSql(checkSql);
+            const existingRows = extractRows(existingRes);
+            if (existingRows.length > 0) {
+                const existingScore = Number(existingRows[0].score) || 0;
+                if (existingScore >= score) {
+                    console.log(`[Websim Database] Player already has higher/equal SQL record (${existingScore}s vs ${score}s) in ${normalizedMode}. Preserving best.`);
+                    return { success: true };
+                }
+            }
+        } catch (e) {}
+
+        // Clean up any existing duplicate records in SQL
+        try {
+            await runWebsimSql(`DELETE FROM websim_scores WHERE (user_id = '${user.id}' OR username = '${safeUsername}') AND mode = '${normalizedMode}';`);
+        } catch (e) {}
+
+        // Insert single best record
+        const insertSql = `INSERT INTO websim_scores (id, user_id, username, avatar_url, score, mode, metadata, replay_data, created_at) VALUES ('${targetId}', '${user.id}', '${safeUsername}', '${safeAvatar}', ${score}, '${normalizedMode}', '${metaSqlStr}', '${replayStr}', '${createdAt}');`;
 
         try {
             await runWebsimSql(insertSql);
-            console.log(`[Websim Database] High score successfully stored for ${user.username} (${mode}: ${score}s)`);
+            console.log(`[Websim Database] High score successfully stored for ${user.username} (${normalizedMode}: ${score}s)`);
             return { success: true };
         } catch (err: any) {
             console.warn(`[Websim Database] Primary insert failed, retrying without replay string:`, err?.message);
             try {
-                const insertNoReplay = `INSERT INTO websim_scores (id, user_id, username, avatar_url, score, mode, metadata, replay_data, created_at) VALUES ('${targetId}', '${user.id}', '${safeUsername}', '${safeAvatar}', ${score}, '${mode}', '${metaSqlStr}', '', '${createdAt}');`;
+                const insertNoReplay = `INSERT INTO websim_scores (id, user_id, username, avatar_url, score, mode, metadata, replay_data, created_at) VALUES ('${targetId}', '${user.id}', '${safeUsername}', '${safeAvatar}', ${score}, '${normalizedMode}', '${metaSqlStr}', '', '${createdAt}');`;
                 await runWebsimSql(insertNoReplay);
-                console.log(`[Websim Database] High score stored without replay for ${user.username}`);
                 return { success: true };
             } catch (err2: any) {
                 console.error(`[Websim Database] Could not insert score into Websim database:`, err2);

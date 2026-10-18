@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 interface HighScoreInputProps {
   initials: string;
@@ -8,6 +8,14 @@ interface HighScoreInputProps {
 }
 
 const HighScoreInput: React.FC<HighScoreInputProps> = ({ initials, setInitials, onSubmit, playHover }) => {
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handleSubmit = () => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    onSubmit();
+  };
+
   return (
     <div className="absolute inset-0 z-[80] flex flex-col items-center justify-center bg-black/90 text-white">
         <h2 className="text-[#f1c40f] text-3xl font-bold mb-8 text-glow-gold">NEW RECORD</h2>
@@ -17,16 +25,22 @@ const HighScoreInput: React.FC<HighScoreInputProps> = ({ initials, setInitials, 
             maxLength={3} 
             value={initials}
             onChange={(e) => setInitials(e.target.value.toUpperCase())}
+            onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                    handleSubmit();
+                }
+            }}
             className="bg-black border-2 border-[#f1c40f] text-center text-5xl font-mono w-40 p-2 mb-8 text-[#f1c40f] outline-none tracking-widest uppercase"
             autoFocus
             placeholder='___'
         />
         <button 
-            onClick={onSubmit}
+            onClick={handleSubmit}
+            disabled={isSubmitting}
             onMouseEnter={playHover}
-            className="px-8 py-3 bg-[#f1c40f] text-black font-bold text-xl rounded hover:bg-white transition-colors"
+            className="px-8 py-3 bg-[#f1c40f] text-black font-bold text-xl rounded hover:bg-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
         >
-            SUBMIT
+            {isSubmitting ? 'SUBMITTING...' : 'SUBMIT'}
         </button>
     </div>
   );

@@ -337,9 +337,16 @@ export const supabaseService = {
             metadata: item.metadata
         }));
 
+        // Strict mode filter: strictly ensure entries only match the requested mode
+        const normalizedMode = mode.toLowerCase().trim();
+        const matchingEntries = rawEntries.filter(entry => {
+            const entryMode = (entry.metadata?.mode || mode).toLowerCase().trim();
+            return entryMode === normalizedMode;
+        });
+
         // Deduplicate: The Hall of Fame strictly shows ONLY ONE best score per player
         const playerBestMap = new Map<string, LeaderboardEntry>();
-        for (const entry of rawEntries) {
+        for (const entry of matchingEntries) {
             const playerKey = (entry.user_id && entry.user_id.trim() !== '')
                 ? entry.user_id
                 : (entry.username || 'PILOT').trim().toLowerCase();
